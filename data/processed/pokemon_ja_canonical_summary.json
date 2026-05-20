@@ -1,0 +1,52 @@
+{
+  "by_canonical_source": {
+    "pokemon_card_official_ja": 5272,
+    "tcgdex": 4341
+  },
+  "by_image_source": {
+    "None": 2185,
+    "pokemon_card_official_ja": 5272,
+    "tcgdex_pokemon_images": 2156
+  },
+  "by_snkr_status": {
+    "matched": 5191,
+    "multiple_verified_matches": 957,
+    "no_verified_match": 774,
+    "not_mapped": 2691
+  },
+  "canonical_records": 9613,
+  "completed_at": "2026-05-20T03:27:29+00:00",
+  "duplicate_image_records": 32,
+  "duplicate_source_records": 3138,
+  "excluded_duplicate_images": 32,
+  "image_manifest_records": 7215,
+  "input_by_source": {
+    "pokemon_card_official_ja": 5366,
+    "tcgdex": 6246,
+    "tcgdex_pokemon_images": 3297
+  },
+  "inputs": [
+    "/Users/xiecongfeng/card_scan/data/manifests/pokemon_card_official_ja_catalog.jsonl",
+    "/Users/xiecongfeng/card_scan/data/manifests/tcgdex_pokemon_cards.jsonl",
+    "/Users/xiecongfeng/card_scan/data/manifests/pokemon_tcgdex_ja_clean_images.jsonl"
+  ],
+  "min_height": 280,
+  "min_width": 200,
+  "notes": [
+    "Official Japanese Pokemon records are preferred for duplicate set_id/card_code keys.",
+    "TCGdex records are retained as duplicate_sources for overlapping keys and become canonical only when the official source has no matching set_id/card_code.",
+    "Rows without both set_id and card_code are kept with source-specific canonical keys."
+  ],
+  "outputs": {
+    "catalog": "/Users/xiecongfeng/card_scan/data/processed/pokemon_ja_canonical_catalog.jsonl",
+    "image_manifest": "/Users/xiecongfeng/card_scan/data/processed/pokemon_ja_canonical_image_manifest.jsonl",
+    "summary": "/Users/xiecongfeng/card_scan/data/processed/pokemon_ja_canonical_summary.json"
+  },
+  "records_read": 14909,
+  "snkr_map_rows_loaded": 8157,
+  "snkr_maps": [
+    "/Users/xiecongfeng/card_scan/data/manifests/snkr_pokemon_ja_product_map.jsonl",
+    "/Users/xiecongfeng/card_scan/data/manifests/snkr_pokemon_official_ja_product_map.jsonl"
+  ],
+  "started_at": "2026-05-20T03:27:29+00:00"
+}

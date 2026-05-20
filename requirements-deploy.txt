@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+python-multipart
+numpy>=1.26
+Pillow>=10.0
+requests>=2.31
+timm
+faiss-cpu
+ultralytics
+opencv-python-headless
+huggingface-hub

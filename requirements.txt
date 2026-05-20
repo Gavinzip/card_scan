@@ -1,0 +1,6 @@
+Pillow>=10.0
+requests>=2.31
+
+# Optional for reading local Hugging Face parquet files:
+# pandas>=2.2
+# pyarrow>=16.0

@@ -1,0 +1,36 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+.venv/
+
+# Keep code and docs in git, keep large/downloaded data local.
+data/raw/*
+data/interim/*
+data/images/*
+data/manifests/*
+data/models/*
+data/processed/*
+
+!data/raw/.gitkeep
+!data/interim/.gitkeep
+!data/images/.gitkeep
+!data/models/.gitkeep
+!data/processed/.gitkeep
+!data/manifests/.gitkeep
+
+# Deployment indexes and compact canonical metadata needed by the API.
+!data/processed/image_index/
+data/processed/image_index/*
+!data/processed/image_index/faiss.index
+!data/processed/image_index/image_embedding_manifest.jsonl
+!data/processed/image_index/image_embeddings.npy
+!data/processed/image_index/summary.json
+!data/processed/pokemon_ja_canonical_image_index/
+data/processed/pokemon_ja_canonical_image_index/*
+!data/processed/pokemon_ja_canonical_image_index/faiss.index
+!data/processed/pokemon_ja_canonical_image_index/image_embedding_manifest.jsonl
+!data/processed/pokemon_ja_canonical_image_index/image_embeddings.npy
+!data/processed/pokemon_ja_canonical_image_index/summary.json
+!data/processed/pokemon_ja_canonical_catalog.jsonl
+!data/processed/pokemon_ja_canonical_summary.json
+!data/processed/pokemon_ja_canonical_image_manifest.jsonl

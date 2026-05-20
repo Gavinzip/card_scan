@@ -1,0 +1,16 @@
+{
+  "backend": "timm",
+  "completed_at": "2026-05-19T14:03:30+00:00",
+  "device": "mps",
+  "embedding_dim": 384,
+  "image_manifest": "data/manifests/pokemon_clean_images.jsonl",
+  "model": "vit_small_patch14_dinov2",
+  "outputs": {
+    "embeddings": "data/processed/image_index/image_embeddings.npy",
+    "faiss_index": "data/processed/image_index/faiss.index",
+    "manifest": "data/processed/image_index/image_embedding_manifest.jsonl"
+  },
+  "pretrained": "laion2b_s34b_b79k",
+  "records_indexed": 20737,
+  "started_at": "2026-05-19T13:18:34+00:00"
+}

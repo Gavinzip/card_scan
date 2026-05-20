@@ -1,0 +1,10 @@
+numpy>=1.26
+Pillow>=10.0
+torch
+timm
+faiss-cpu
+tqdm
+
+# Optional only if you explicitly use:
+#   scripts/indexing/build_image_embeddings.py --backend open_clip
+# open-clip-torch
