@@ -115,8 +115,9 @@ function renderResults(results = []) {
       const subtitle = [result.name_en, result.name_ja].filter(Boolean).filter((item, idx, arr) => arr.indexOf(item) === idx).join(" / ");
       const code = [result.set_id, result.card_code].filter(Boolean).join("-");
       const score = Number(result.score || 0).toFixed(3);
-      const image = result.image_url
-        ? `<img alt="${escapeHtml(title)}" src="${escapeHtml(result.image_url)}" loading="lazy">`
+      const displayImageUrl = result.display_image_url || result.reference_image_url || result.image_url;
+      const image = displayImageUrl
+        ? `<img alt="${escapeHtml(title)}" src="${escapeHtml(displayImageUrl)}" loading="lazy">`
         : "No image URL";
       const snkr = result.snkr || {};
       const price = snkr.min_price_format || snkr.min_price;
