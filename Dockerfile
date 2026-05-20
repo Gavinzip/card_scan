@@ -30,7 +30,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements-deploy.txt ./
 RUN python -m pip install --upgrade pip && \
     python -m pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision && \
-    python -m pip install -r requirements-deploy.txt
+    python -m pip install -r requirements-deploy.txt && \
+    python -c "import cv2, faiss, fastapi, timm; from ultralytics import YOLO; print('runtime imports ok')"
 
 COPY web ./web
 COPY scripts ./scripts
