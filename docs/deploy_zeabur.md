@@ -91,5 +91,6 @@ Local MPS hot-path timing was about 0.5 seconds per image. A CPU-only Zeabur ins
 - `zbpack.json` pins Zeabur to the root `Dockerfile`.
 - The Dockerfile avoids heredoc Python blocks because Zeabur can inject build-time `ARG`/`ENV` lines into multi-line build commands.
 - The crop model is not downloaded during image build; use `/warmup` after deploy if you want the first scan to be faster.
+- The Docker image installs the X11/OpenGL runtime libraries that OpenCV wheels import even when the service uses headless image processing.
 - The returned `local_image_path` values are provenance paths from the build machine and should not be treated as public URLs. Use `image_url` for remote display when available.
 - Official Japanese and TCGdex images are local reference/search assets, not training or redistribution assets.
