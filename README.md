@@ -293,7 +293,6 @@ See `docs/deploy_zeabur.md` for environment variables and deployment notes.
 - `docs/pipeline.md`: end-to-end runbook.
 - `docs/schema.md`: unified catalog columns.
 - `docs/deploy_zeabur.md`: Docker/Zeabur deployment guide.
-- `docs/reference_images.md`: mount local image packs on a private server and display them in the frontend.
 
 ## No Silent Fallbacks
 

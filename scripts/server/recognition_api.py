@@ -7,7 +7,6 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
 
 # Importing PyTorch, OpenCV/Ultralytics, and FAISS in one service can load
 # multiple OpenMP runtimes on macOS. Linux Docker builds are usually fine, but
@@ -56,9 +55,6 @@ DEFAULT_TARGET_ASPECT = float(os.environ.get("CARD_SCAN_CROP_TARGET_ASPECT", str
 DEFAULT_ASPECT_TOLERANCE = float(os.environ.get("CARD_SCAN_CROP_ASPECT_TOLERANCE", "0.05"))
 DEFAULT_DEVICE = os.environ.get("CARD_SCAN_DEVICE") or None
 PRELOAD = os.environ.get("CARD_SCAN_PRELOAD", "false").lower() in {"1", "true", "yes"}
-REFERENCE_IMAGE_ROUTE = os.environ.get("CARD_SCAN_REFERENCE_IMAGE_ROUTE", "/reference-images").rstrip("/") or "/reference-images"
-REFERENCE_IMAGE_ROOTS_CONFIG = os.environ.get("CARD_SCAN_IMAGE_ROOTS", "")
-LOCAL_PATH_REWRITES_CONFIG = os.environ.get("CARD_SCAN_LOCAL_PATH_REWRITES", "")
 CORS_ORIGINS = [
     origin.strip()
     for origin in os.environ.get("CARD_SCAN_CORS_ORIGINS", "").split(",")
@@ -80,51 +76,6 @@ if CORS_ORIGINS:
 
 if FRONTEND_ASSETS.exists():
     app.mount("/assets", StaticFiles(directory=FRONTEND_ASSETS), name="assets")
-
-
-def parse_named_paths(config: str) -> dict[str, Path]:
-    paths: dict[str, Path] = {}
-    for item in config.split(","):
-        item = item.strip()
-        if not item:
-            continue
-        if "=" not in item:
-            raise RuntimeError(f"Invalid CARD_SCAN_IMAGE_ROOTS entry: {item!r}")
-        name, path = item.split("=", 1)
-        name = safe_url_part(name.strip())
-        if not name:
-            raise RuntimeError(f"Invalid CARD_SCAN_IMAGE_ROOTS name: {item!r}")
-        paths[name] = Path(path.strip()).resolve()
-    return paths
-
-
-def parse_path_rewrites(config: str) -> list[tuple[Path, Path]]:
-    rewrites: list[tuple[Path, Path]] = []
-    for item in config.split(","):
-        item = item.strip()
-        if not item:
-            continue
-        if "=" not in item:
-            raise RuntimeError(f"Invalid CARD_SCAN_LOCAL_PATH_REWRITES entry: {item!r}")
-        source, target = item.split("=", 1)
-        rewrites.append((Path(source.strip()).resolve(), Path(target.strip()).resolve()))
-    return rewrites
-
-
-def safe_url_part(value: str) -> str:
-    return "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in value)
-
-
-REFERENCE_IMAGE_ROOTS = parse_named_paths(REFERENCE_IMAGE_ROOTS_CONFIG)
-LOCAL_PATH_REWRITES = parse_path_rewrites(LOCAL_PATH_REWRITES_CONFIG)
-
-for image_root_name, image_root_path in REFERENCE_IMAGE_ROOTS.items():
-    if image_root_path.exists():
-        app.mount(
-            f"{REFERENCE_IMAGE_ROUTE}/{image_root_name}",
-            StaticFiles(directory=image_root_path),
-            name=f"reference_images_{image_root_name}",
-        )
 
 
 @dataclass
@@ -298,39 +249,7 @@ def configured_indexes() -> dict[str, Path]:
     return indexes
 
 
-def rewritten_local_paths(local_image_path: str | None) -> list[Path]:
-    if not local_image_path:
-        return []
-    original = Path(local_image_path).resolve()
-    candidates = [original]
-    for source_prefix, target_prefix in LOCAL_PATH_REWRITES:
-        try:
-            relative = original.relative_to(source_prefix)
-        except ValueError:
-            continue
-        candidates.append(target_prefix / relative)
-    return candidates
-
-
-def reference_image_url(local_image_path: str | None) -> str | None:
-    for candidate in rewritten_local_paths(local_image_path):
-        for root_name, root_path in REFERENCE_IMAGE_ROOTS.items():
-            if not root_path.exists():
-                continue
-            try:
-                relative = candidate.relative_to(root_path)
-            except ValueError:
-                continue
-            if not candidate.exists():
-                continue
-            encoded = "/".join(quote(part) for part in relative.parts)
-            return f"{REFERENCE_IMAGE_ROUTE}/{root_name}/{encoded}"
-    return None
-
-
 def format_result(index_name: str, rank: int, score: float, record: dict[str, Any]) -> dict[str, Any]:
-    remote_image_url = record.get("image_url")
-    local_reference_image_url = reference_image_url(record.get("local_image_path"))
     return {
         "index": index_name,
         "rank": rank,
@@ -349,9 +268,7 @@ def format_result(index_name: str, rank: int, score: float, record: dict[str, An
         "name_ja": record.get("name_ja"),
         "rarity": record.get("rarity"),
         "variant": record.get("variant"),
-        "image_url": remote_image_url,
-        "reference_image_url": local_reference_image_url,
-        "display_image_url": remote_image_url or local_reference_image_url,
+        "image_url": record.get("image_url"),
         "image_sha256": record.get("image_sha256"),
         "source_record_count": record.get("source_record_count"),
         "duplicate_source_count": record.get("duplicate_source_count"),
@@ -399,7 +316,6 @@ def api_info() -> dict[str, Any]:
         "version": APP_VERSION,
         "frontend": "/",
         "endpoints": ["/api", "/health", "/warmup", "/recognize"],
-        "reference_image_route": REFERENCE_IMAGE_ROUTE,
     }
 
 
@@ -435,18 +351,6 @@ def health() -> dict[str, Any]:
             }
             for name, path in configured.items()
         },
-        "reference_images": {
-            name: {
-                "path": str(path),
-                "exists": path.exists(),
-                "route": f"{REFERENCE_IMAGE_ROUTE}/{name}",
-            }
-            for name, path in REFERENCE_IMAGE_ROOTS.items()
-        },
-        "local_path_rewrites": [
-            {"source": str(source), "target": str(target)}
-            for source, target in LOCAL_PATH_REWRITES
-        ],
         "device": service.device or DEFAULT_DEVICE or "auto",
     }
 
