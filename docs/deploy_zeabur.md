@@ -76,6 +76,9 @@ curl -F "file=@/path/to/photo.jpg" \
 | `CARD_SCAN_PRELOAD` | `false` | Load models lazily. Set to `true` only when the instance has enough startup time and memory. |
 | `CARD_SCAN_DEVICE` | `cpu` | Use `cpu` on Zeabur CPU instances. |
 | `CARD_SCAN_INDEXES` | `pokemon_en=data/processed/image_index,pokemon_ja=data/processed/pokemon_ja_canonical_image_index` | Comma-separated index name/path pairs. |
+| `CARD_SCAN_IMAGE_ROOTS` | empty | Optional comma-separated `name=/path` roots for local reference images served through `/reference-images/{name}/...`. |
+| `CARD_SCAN_LOCAL_PATH_REWRITES` | empty | Optional comma-separated `old_prefix=new_prefix` rules for mapping manifest `local_image_path` values to mounted server paths. |
+| `CARD_SCAN_REFERENCE_IMAGE_ROUTE` | `/reference-images` | URL route prefix for mounted reference images. |
 | `CARD_SCAN_CORS_ORIGINS` | empty | Optional comma-separated origins if a separate frontend calls this API. Leave empty for same-origin Zeabur deployment. |
 | `CARD_SCAN_CROP_CONFIDENCE` | `0.25` | YOLO detection confidence threshold. |
 | `CARD_SCAN_CROP_IMGSZ` | `1024` | YOLO inference image size. |
@@ -93,4 +96,5 @@ Local MPS hot-path timing was about 0.5 seconds per image. A CPU-only Zeabur ins
 - The crop model is not downloaded during image build; use `/warmup` after deploy if you want the first scan to be faster.
 - The Docker image installs the X11/OpenGL runtime libraries that OpenCV wheels import even when the service uses headless image processing.
 - The returned `local_image_path` values are provenance paths from the build machine and should not be treated as public URLs. Use `image_url` for remote display when available.
+- To show local Kaggle English images in the frontend, mount the image folder and configure `CARD_SCAN_IMAGE_ROOTS` plus `CARD_SCAN_LOCAL_PATH_REWRITES`; see `docs/reference_images.md`.
 - Official Japanese and TCGdex images are local reference/search assets, not training or redistribution assets.
