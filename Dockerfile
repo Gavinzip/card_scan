@@ -8,7 +8,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     OMP_NUM_THREADS=2 \
     KMP_DUPLICATE_LIB_OK=TRUE \
     CARD_SCAN_DEVICE=cpu \
-    CARD_SCAN_PRELOAD=true \
+    CARD_SCAN_PRELOAD=false \
     CARD_SCAN_INDEXES="pokemon_en=data/processed/image_index,pokemon_ja=data/processed/pokemon_ja_canonical_image_index"
 
 WORKDIR /app
@@ -32,8 +32,6 @@ COPY data/processed/pokemon_ja_canonical_image_index ./data/processed/pokemon_ja
 COPY data/processed/pokemon_ja_canonical_catalog.jsonl ./data/processed/pokemon_ja_canonical_catalog.jsonl
 COPY data/processed/pokemon_ja_canonical_summary.json ./data/processed/pokemon_ja_canonical_summary.json
 COPY data/processed/pokemon_ja_canonical_image_manifest.jsonl ./data/processed/pokemon_ja_canonical_image_manifest.jsonl
-
-RUN mkdir -p data/models && python -c "from pathlib import Path; from scripts.cropping.auto_crop_cards import DEFAULT_MODEL_FILE, DEFAULT_REPO_ID, ensure_model; ensure_model(Path('data/models/cardcaptor_v3_best.pt'), DEFAULT_REPO_ID, DEFAULT_MODEL_FILE)"
 
 EXPOSE 8080
 

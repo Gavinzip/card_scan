@@ -281,6 +281,10 @@ Deploy to Zeabur with the included `Dockerfile`. The Docker image serves:
 scripts.server.recognition_api:app
 ```
 
+The included `zbpack.json` pins Zeabur to the root Dockerfile. The crop model is
+downloaded lazily on `/warmup` or the first cropped `/recognize` request, so the
+first request after deploy can take longer.
+
 See `docs/deploy_zeabur.md` for environment variables and deployment notes.
 
 ## Docs

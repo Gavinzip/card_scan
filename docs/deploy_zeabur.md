@@ -20,7 +20,8 @@ data/processed/pokemon_ja_canonical_summary.json
 data/processed/pokemon_ja_canonical_image_manifest.jsonl
 ```
 
-The crop model is downloaded during Docker build from Hugging Face:
+The crop model is downloaded lazily from Hugging Face when `/warmup` or the
+first cropped `/recognize` request runs:
 
 ```text
 AlecKarfonta/cardcaptor-v3 / weights/cardcaptor_v3_best.pt
@@ -72,7 +73,7 @@ curl -F "file=@/path/to/photo.jpg" \
 | --- | --- | --- |
 | `PORT` | `8080` | HTTP port. Zeabur injects this in Docker deployments. |
 | `WEB_CONCURRENCY` | `1` | Keep at `1` unless the instance has enough RAM for duplicate model copies. |
-| `CARD_SCAN_PRELOAD` | `true` | Load crop model, embedding model, and indexes during app startup. |
+| `CARD_SCAN_PRELOAD` | `false` | Load models lazily. Set to `true` only when the instance has enough startup time and memory. |
 | `CARD_SCAN_DEVICE` | `cpu` | Use `cpu` on Zeabur CPU instances. |
 | `CARD_SCAN_INDEXES` | `pokemon_en=data/processed/image_index,pokemon_ja=data/processed/pokemon_ja_canonical_image_index` | Comma-separated index name/path pairs. |
 | `CARD_SCAN_CORS_ORIGINS` | empty | Optional comma-separated origins if a separate frontend calls this API. Leave empty for same-origin Zeabur deployment. |
@@ -87,6 +88,8 @@ Local MPS hot-path timing was about 0.5 seconds per image. A CPU-only Zeabur ins
 
 - Do not push raw card images; the Docker image only needs the FAISS indexes and embedding manifests.
 - Ensure `data/processed/image_index/` and `data/processed/pokemon_ja_canonical_image_index/` are present in the deployed repository or build context.
+- `zbpack.json` pins Zeabur to the root `Dockerfile`.
 - The Dockerfile avoids heredoc Python blocks because Zeabur can inject build-time `ARG`/`ENV` lines into multi-line build commands.
+- The crop model is not downloaded during image build; use `/warmup` after deploy if you want the first scan to be faster.
 - The returned `local_image_path` values are provenance paths from the build machine and should not be treated as public URLs. Use `image_url` for remote display when available.
 - Official Japanese and TCGdex images are local reference/search assets, not training or redistribution assets.
