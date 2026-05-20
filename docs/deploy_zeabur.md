@@ -4,6 +4,12 @@ This service deploys as a Docker app because the runtime includes PyTorch, FAISS
 
 ## Included Runtime Assets
 
+The Docker image serves the frontend from:
+
+```text
+web/
+```
+
 The Docker image copies these local indexes:
 
 ```text
@@ -21,6 +27,18 @@ AlecKarfonta/cardcaptor-v3 / weights/cardcaptor_v3_best.pt
 ```
 
 ## API
+
+Frontend:
+
+```text
+$APP_URL/
+```
+
+API metadata:
+
+```bash
+curl "$APP_URL/api"
+```
 
 Health:
 
@@ -57,6 +75,7 @@ curl -F "file=@/path/to/photo.jpg" \
 | `CARD_SCAN_PRELOAD` | `true` | Load crop model, embedding model, and indexes during app startup. |
 | `CARD_SCAN_DEVICE` | `cpu` | Use `cpu` on Zeabur CPU instances. |
 | `CARD_SCAN_INDEXES` | `pokemon_en=data/processed/image_index,pokemon_ja=data/processed/pokemon_ja_canonical_image_index` | Comma-separated index name/path pairs. |
+| `CARD_SCAN_CORS_ORIGINS` | empty | Optional comma-separated origins if a separate frontend calls this API. Leave empty for same-origin Zeabur deployment. |
 | `CARD_SCAN_CROP_CONFIDENCE` | `0.25` | YOLO detection confidence threshold. |
 | `CARD_SCAN_CROP_IMGSZ` | `1024` | YOLO inference image size. |
 
@@ -68,5 +87,6 @@ Local MPS hot-path timing was about 0.5 seconds per image. A CPU-only Zeabur ins
 
 - Do not push raw card images; the Docker image only needs the FAISS indexes and embedding manifests.
 - Ensure `data/processed/image_index/` and `data/processed/pokemon_ja_canonical_image_index/` are present in the deployed repository or build context.
+- The Dockerfile avoids heredoc Python blocks because Zeabur can inject build-time `ARG`/`ENV` lines into multi-line build commands.
 - The returned `local_image_path` values are provenance paths from the build machine and should not be treated as public URLs. Use `image_url` for remote display when available.
 - Official Japanese and TCGdex images are local reference/search assets, not training or redistribution assets.

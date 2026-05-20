@@ -17,6 +17,9 @@ os.environ.setdefault("OMP_NUM_THREADS", "2")
 ROOT = Path(__file__).resolve().parents[2]
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from scripts.cropping.auto_crop_cards import (
     DEFAULT_MODEL_FILE,
@@ -32,6 +35,9 @@ from scripts.lib.io_utils import iter_jsonl, read_json
 from scripts.lib.schema import utc_now_iso
 
 APP_VERSION = "0.1.0"
+FRONTEND_DIR = ROOT / "web"
+FRONTEND_INDEX = FRONTEND_DIR / "index.html"
+FRONTEND_ASSETS = FRONTEND_DIR / "assets"
 
 DEFAULT_INDEXES = (
     "pokemon_en=data/processed/image_index,"
@@ -49,10 +55,27 @@ DEFAULT_TARGET_ASPECT = float(os.environ.get("CARD_SCAN_CROP_TARGET_ASPECT", str
 DEFAULT_ASPECT_TOLERANCE = float(os.environ.get("CARD_SCAN_CROP_ASPECT_TOLERANCE", "0.05"))
 DEFAULT_DEVICE = os.environ.get("CARD_SCAN_DEVICE") or None
 PRELOAD = os.environ.get("CARD_SCAN_PRELOAD", "false").lower() in {"1", "true", "yes"}
+CORS_ORIGINS = [
+    origin.strip()
+    for origin in os.environ.get("CARD_SCAN_CORS_ORIGINS", "").split(",")
+    if origin.strip()
+]
 
 cv2, np, YOLO = require_deps()
 
 app = FastAPI(title="TCG Card Recognition API", version=APP_VERSION)
+
+if CORS_ORIGINS:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=CORS_ORIGINS,
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["*"],
+    )
+
+if FRONTEND_ASSETS.exists():
+    app.mount("/assets", StaticFiles(directory=FRONTEND_ASSETS), name="assets")
 
 
 @dataclass
@@ -287,13 +310,25 @@ def startup() -> None:
         service.preload()
 
 
-@app.get("/")
-def root() -> dict[str, Any]:
+def api_info() -> dict[str, Any]:
     return {
         "name": "TCG Card Recognition API",
         "version": APP_VERSION,
-        "endpoints": ["/health", "/recognize"],
+        "frontend": "/",
+        "endpoints": ["/api", "/health", "/warmup", "/recognize"],
     }
+
+
+@app.get("/", include_in_schema=False)
+def frontend() -> Any:
+    if FRONTEND_INDEX.exists():
+        return FileResponse(FRONTEND_INDEX)
+    return api_info()
+
+
+@app.get("/api")
+def api_root() -> dict[str, Any]:
+    return api_info()
 
 
 @app.get("/health")

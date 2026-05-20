@@ -265,6 +265,16 @@ curl -F "file=@/path/to/photo.jpg" \
   "http://127.0.0.1:8080/recognize?top_k=5&per_index_top_k=5"
 ```
 
+Open the built-in frontend:
+
+```text
+http://127.0.0.1:8080/
+```
+
+The frontend is a static console served by FastAPI. It can upload a card photo,
+call `/recognize`, display the debug crop, show timings, and list top matches
+with SNKRDUNK price fields when available.
+
 Deploy to Zeabur with the included `Dockerfile`. The Docker image serves:
 
 ```text

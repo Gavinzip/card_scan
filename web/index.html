@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>TCG Card Scan</title>
+    <link rel="stylesheet" href="/assets/styles.css">
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="workspace" aria-labelledby="page-title">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Card Recognition Console</p>
+            <h1 id="page-title">TCG Card Scan</h1>
+          </div>
+          <div class="health-pill" id="healthPill" data-state="checking">
+            <span class="health-dot" aria-hidden="true"></span>
+            <span id="healthText">Checking API</span>
+          </div>
+        </header>
+
+        <div class="scan-grid">
+          <section class="scan-panel" aria-label="Upload card image">
+            <div class="drop-zone" id="dropZone">
+              <input id="fileInput" type="file" accept="image/*">
+              <div class="drop-copy">
+                <span class="upload-mark" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" role="img" aria-label="Upload">
+                    <path d="M12 3v12m0-12 4.5 4.5M12 3 7.5 7.5M5 14v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                </span>
+                <strong>拖曳卡片照片到這裡</strong>
+                <span>或點擊選擇圖片</span>
+              </div>
+            </div>
+
+            <figure class="preview-frame" id="previewFrame" hidden>
+              <img id="previewImage" alt="Selected card photo preview">
+              <figcaption id="fileMeta"></figcaption>
+            </figure>
+
+            <div class="action-row">
+              <button class="primary-action" id="recognizeButton" type="button" disabled>
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M4 7V5a1 1 0 0 1 1-1h2m10 0h2a1 1 0 0 1 1 1v2M4 17v2a1 1 0 0 0 1 1h2m10 0h2a1 1 0 0 0 1-1v-2M8 12h8m-4-4v8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                </svg>
+                Start scan
+              </button>
+              <button class="secondary-action" id="warmupButton" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M12 3v4m0 10v4m9-9h-4M7 12H3m15.4-6.4-2.8 2.8M8.4 15.6l-2.8 2.8m12.8 0-2.8-2.8M8.4 8.4 5.6 5.6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                </svg>
+                Warm up
+              </button>
+            </div>
+          </section>
+
+          <aside class="settings-panel" aria-label="Scan settings">
+            <label>
+              <span>API base</span>
+              <input id="apiBaseInput" type="url" placeholder="same origin">
+            </label>
+            <div class="switch-row">
+              <label class="switch-label" for="cropToggle">
+                <input id="cropToggle" type="checkbox" checked>
+                <span>Auto crop</span>
+              </label>
+              <label class="switch-label" for="fallbackToggle">
+                <input id="fallbackToggle" type="checkbox">
+                <span>Use original if no crop</span>
+              </label>
+            </div>
+            <label>
+              <span>Top results</span>
+              <input id="topKInput" type="number" min="1" max="20" value="5">
+            </label>
+            <label>
+              <span>Crop confidence</span>
+              <input id="confidenceInput" type="range" min="0.1" max="0.75" value="0.25" step="0.05">
+              <output id="confidenceOutput">0.25</output>
+            </label>
+          </aside>
+        </div>
+      </section>
+
+      <section class="status-band" id="statusBand" aria-live="polite">
+        <div>
+          <span class="status-label">Status</span>
+          <strong id="statusText">Ready</strong>
+        </div>
+        <dl class="timing-grid" id="timingGrid">
+          <div><dt>Crop</dt><dd>-</dd></div>
+          <div><dt>Embed</dt><dd>-</dd></div>
+          <div><dt>Search</dt><dd>-</dd></div>
+          <div><dt>Total</dt><dd>-</dd></div>
+        </dl>
+      </section>
+
+      <section class="results-layout">
+        <div class="crop-panel">
+          <div class="section-heading">
+            <h2>Crop preview</h2>
+            <span id="cropStatus">No scan yet</span>
+          </div>
+          <div class="crop-preview" id="cropPreview">
+            <span>裁切後圖片會顯示在這裡</span>
+          </div>
+        </div>
+
+        <div class="results-panel">
+          <div class="section-heading">
+            <h2>Matches</h2>
+            <span id="resultCount">0 results</span>
+          </div>
+          <div class="results-list" id="resultsList">
+            <p class="empty-state">上傳卡片照片後，這裡會顯示最接近的英文與日文卡片。</p>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script src="/assets/app.js" defer></script>
+  </body>
+</html>

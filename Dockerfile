@@ -25,6 +25,7 @@ RUN python -m pip install --upgrade pip && \
     python -m pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision && \
     python -m pip install -r requirements-deploy.txt
 
+COPY web ./web
 COPY scripts ./scripts
 COPY data/processed/image_index ./data/processed/image_index
 COPY data/processed/pokemon_ja_canonical_image_index ./data/processed/pokemon_ja_canonical_image_index
@@ -32,13 +33,7 @@ COPY data/processed/pokemon_ja_canonical_catalog.jsonl ./data/processed/pokemon_
 COPY data/processed/pokemon_ja_canonical_summary.json ./data/processed/pokemon_ja_canonical_summary.json
 COPY data/processed/pokemon_ja_canonical_image_manifest.jsonl ./data/processed/pokemon_ja_canonical_image_manifest.jsonl
 
-RUN mkdir -p data/models && \
-    python - <<'PY'
-from pathlib import Path
-from scripts.cropping.auto_crop_cards import DEFAULT_MODEL_FILE, DEFAULT_REPO_ID, ensure_model
-
-ensure_model(Path("data/models/cardcaptor_v3_best.pt"), DEFAULT_REPO_ID, DEFAULT_MODEL_FILE)
-PY
+RUN mkdir -p data/models && python -c "from pathlib import Path; from scripts.cropping.auto_crop_cards import DEFAULT_MODEL_FILE, DEFAULT_REPO_ID, ensure_model; ensure_model(Path('data/models/cardcaptor_v3_best.pt'), DEFAULT_REPO_ID, DEFAULT_MODEL_FILE)"
 
 EXPOSE 8080
 
