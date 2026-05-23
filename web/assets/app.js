@@ -6,9 +6,11 @@ const state = {
 
 const els = {
   apiBaseInput: document.querySelector("#apiBaseInput"),
+  cardCodeOcrToggle: document.querySelector("#cardCodeOcrToggle"),
   confidenceInput: document.querySelector("#confidenceInput"),
   confidenceOutput: document.querySelector("#confidenceOutput"),
   cropPreview: document.querySelector("#cropPreview"),
+  cropModeInput: document.querySelector("#cropModeInput"),
   cropStatus: document.querySelector("#cropStatus"),
   cropToggle: document.querySelector("#cropToggle"),
   dropZone: document.querySelector("#dropZone"),
@@ -25,6 +27,7 @@ const els = {
   statusText: document.querySelector("#statusText"),
   timingGrid: document.querySelector("#timingGrid"),
   topKInput: document.querySelector("#topKInput"),
+  visualRerankToggle: document.querySelector("#visualRerankToggle"),
   warmupButton: document.querySelector("#warmupButton"),
 };
 
@@ -60,6 +63,8 @@ function setTimings(timings = {}) {
     ["Crop", timings.crop_seconds],
     ["Embed", timings.embedding_seconds],
     ["Search", timings.search_seconds],
+    ["Rerank", timings.rerank_seconds ?? timings.visual_rerank_seconds],
+    ["OCR", timings.ocr_seconds],
     ["Total", timings.total_seconds],
   ];
   els.timingGrid.innerHTML = values
@@ -115,6 +120,23 @@ function renderResults(results = []) {
       const subtitle = [result.name_en, result.name_ja].filter(Boolean).filter((item, idx, arr) => arr.indexOf(item) === idx).join(" / ");
       const code = [result.set_id, result.card_code].filter(Boolean).join("-");
       const score = Number(result.score || 0).toFixed(3);
+      const embeddingScore = typeof result.embedding_score === "number" ? Number(result.embedding_score).toFixed(3) : null;
+      const siglipScore = typeof result.siglip_score === "number" ? Number(result.siglip_score).toFixed(3) : null;
+      const siglipNorm = typeof result.siglip_norm === "number" ? Number(result.siglip_norm).toFixed(3) : null;
+      const visualScore = typeof result.visual_score === "number" ? Number(result.visual_score).toFixed(3) : null;
+      const ocrBoost = typeof result.ocr_card_code_boost === "number" && result.ocr_card_code_boost > 0
+        ? `OCR +${Number(result.ocr_card_code_boost).toFixed(3)}`
+        : null;
+      const scoreParts = [
+        embeddingScore ? `Emb ${embeddingScore}` : null,
+        siglipScore ? `SigLIP ${siglipScore}` : null,
+        siglipNorm ? `S-norm ${siglipNorm}` : null,
+        ocrBoost,
+        visualScore ? `Visual ${visualScore}` : null,
+        typeof result.visual_color_score === "number" ? `Color ${Number(result.visual_color_score).toFixed(3)}` : null,
+        typeof result.visual_structure_score === "number" ? `Structure ${Number(result.visual_structure_score).toFixed(3)}` : null,
+        result.original_rank ? `Old #${result.original_rank}` : null,
+      ].filter(Boolean);
       const displayImageUrl = result.display_image_url || result.reference_image_url || result.image_url;
       const image = displayImageUrl
         ? `<img alt="${escapeHtml(title)}" src="${escapeHtml(displayImageUrl)}" loading="lazy">`
@@ -138,6 +160,7 @@ function renderResults(results = []) {
             <div class="result-title">${escapeHtml(title)}</div>
             <div class="result-subtitle">${escapeHtml(subtitle || "No alternate name")}</div>
             <div class="result-meta">${escapeHtml(code || "No set/card code")} · ${escapeHtml(result.rarity || "No rarity")} · ${escapeHtml(result.canonical_source || result.source || "No source")}</div>
+            ${scoreParts.length ? `<div class="result-meta">${escapeHtml(scoreParts.join(" · "))}</div>` : ""}
             <div class="price-line">Price: ${priceLine}</div>
           </div>
         </article>
@@ -184,10 +207,16 @@ async function recognize() {
   els.cropPreview.innerHTML = "<span>Processing...</span>";
 
   const params = new URLSearchParams({
-    crop: String(els.cropToggle.checked),
+    crop: String(els.cropToggle.checked && els.cropModeInput.value !== "none"),
+    crop_mode: els.cropModeInput.value,
     fallback_to_original: String(els.fallbackToggle.checked),
     top_k: String(Number(els.topKInput.value || 5)),
-    per_index_top_k: String(Math.max(Number(els.topKInput.value || 5), 5)),
+    per_index_top_k: String(els.visualRerankToggle.checked ? 100 : Math.max(Number(els.topKInput.value || 5), 5)),
+    visual_rerank: String(els.visualRerankToggle.checked),
+    visual_rerank_candidates: "100",
+    visual_rerank_weight: "0.40",
+    rerank_model: "siglip",
+    card_code_ocr: String(els.cardCodeOcrToggle.checked),
     confidence: els.confidenceInput.value,
     include_debug_crop_base64: "true",
   });
@@ -204,7 +233,9 @@ async function recognize() {
     setTimings(data.timings);
     renderCrop(data.crop);
     renderResults(data.results);
-    setStatus(data.status === "ok" ? "Scan complete." : data.status);
+    const parsed = data.card_code_ocr?.best?.parsed;
+    const ocrStatus = parsed ? ` OCR ${parsed.set_id}-${parsed.card_number}` : "";
+    setStatus(data.status === "ok" ? `Scan complete.${ocrStatus}` : data.status);
   } catch (error) {
     setStatus(`Scan failed: ${error.message}`);
     els.cropStatus.textContent = "Error";

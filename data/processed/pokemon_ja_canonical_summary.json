@@ -1,40 +1,49 @@
 {
   "by_canonical_source": {
     "pokemon_card_official_ja": 5272,
+    "serebii_pokemon_ja": 10964,
     "tcgdex": 4341
   },
   "by_image_source": {
-    "None": 2185,
+    "None": 1172,
+    "pokellector_pokemon_ja_images": 1717,
     "pokemon_card_official_ja": 5272,
+    "serebii_pokemon_ja": 10260,
     "tcgdex_pokemon_images": 2156
   },
   "by_snkr_status": {
-    "matched": 5191,
-    "multiple_verified_matches": 957,
-    "no_verified_match": 774,
-    "not_mapped": 2691
+    "matched": 12355,
+    "multiple_verified_matches": 3369,
+    "no_verified_match": 4347,
+    "not_mapped": 506
   },
-  "canonical_records": 9613,
-  "completed_at": "2026-05-20T03:27:29+00:00",
-  "duplicate_image_records": 32,
-  "duplicate_source_records": 3138,
-  "excluded_duplicate_images": 32,
-  "image_manifest_records": 7215,
+  "canonical_records": 20577,
+  "completed_at": "2026-05-22T09:25:11+00:00",
+  "duplicate_image_records": 38,
+  "duplicate_source_records": 20217,
+  "excluded_duplicate_images": 38,
+  "image_manifest_records": 19332,
   "input_by_source": {
     "pokemon_card_official_ja": 5366,
+    "serebii_pokemon_ja": 25885,
     "tcgdex": 6246,
     "tcgdex_pokemon_images": 3297
   },
   "inputs": [
     "/Users/xiecongfeng/card_scan/data/manifests/pokemon_card_official_ja_catalog.jsonl",
     "/Users/xiecongfeng/card_scan/data/manifests/tcgdex_pokemon_cards.jsonl",
-    "/Users/xiecongfeng/card_scan/data/manifests/pokemon_tcgdex_ja_clean_images.jsonl"
+    "/Users/xiecongfeng/card_scan/data/manifests/pokemon_tcgdex_ja_clean_images.jsonl",
+    "/Users/xiecongfeng/card_scan/data/manifests/serebii_pokemon_ja_images.jsonl",
+    "/Users/xiecongfeng/card_scan/data/manifests/serebii_pokemon_ja_all_set_canonical_supplement.jsonl",
+    "/Users/xiecongfeng/card_scan/data/manifests/serebii_pokemon_ja_all_set_needed_images.jsonl",
+    "/Users/xiecongfeng/card_scan/data/manifests/serebii_pokemon_ja_canonical_image_supplement.jsonl"
   ],
-  "min_height": 280,
-  "min_width": 200,
+  "min_height": 160,
+  "min_width": 120,
   "notes": [
     "Official Japanese Pokemon records are preferred for duplicate set_id/card_code keys.",
-    "TCGdex records are retained as duplicate_sources for overlapping keys and become canonical only when the official source has no matching set_id/card_code.",
+    "Serebii records are supplemental local-reference rows: they can fill name_en/image gaps and become canonical only when official/TCGdex has no matching set_id/card_code.",
+    "TCGdex records are retained as duplicate_sources for overlapping keys and become canonical only when higher-priority sources have no matching set_id/card_code.",
     "Rows without both set_id and card_code are kept with source-specific canonical keys."
   ],
   "outputs": {
@@ -42,11 +51,19 @@
     "image_manifest": "/Users/xiecongfeng/card_scan/data/processed/pokemon_ja_canonical_image_manifest.jsonl",
     "summary": "/Users/xiecongfeng/card_scan/data/processed/pokemon_ja_canonical_summary.json"
   },
-  "records_read": 14909,
-  "snkr_map_rows_loaded": 8157,
+  "pokellector_backfill_merge": {
+    "backup_dir": "/Users/xiecongfeng/card_scan/data/processed/backups/pokellector_merge_20260522T092456+0000",
+    "merged_records": 1717,
+    "skipped_records": 3,
+    "source_manifest": "/Users/xiecongfeng/card_scan/data/manifests/pokellector_pokemon_ja_missing_images.jsonl",
+    "updated_at": "2026-05-22T09:25:11+00:00"
+  },
+  "records_read": 40794,
+  "snkr_map_rows_loaded": 21416,
   "snkr_maps": [
     "/Users/xiecongfeng/card_scan/data/manifests/snkr_pokemon_ja_product_map.jsonl",
-    "/Users/xiecongfeng/card_scan/data/manifests/snkr_pokemon_official_ja_product_map.jsonl"
+    "/Users/xiecongfeng/card_scan/data/manifests/snkr_pokemon_official_ja_product_map.jsonl",
+    "/Users/xiecongfeng/card_scan/data/manifests/snkr_pokemon_ja_canonical_supplemental_combined_product_map.jsonl"
   ],
-  "started_at": "2026-05-20T03:27:29+00:00"
+  "started_at": "2026-05-22T07:12:16+00:00"
 }

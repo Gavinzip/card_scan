@@ -61,14 +61,30 @@
               <span>API base</span>
               <input id="apiBaseInput" type="url" placeholder="same origin">
             </label>
+            <label>
+              <span>Crop mode</span>
+              <select id="cropModeInput">
+                <option value="auto" selected>Auto crop</option>
+                <option value="fixed_inner_card">PSA slab inner crop</option>
+                <option value="none">Original image</option>
+              </select>
+            </label>
             <div class="switch-row">
               <label class="switch-label" for="cropToggle">
                 <input id="cropToggle" type="checkbox" checked>
-                <span>Auto crop</span>
+                <span>Use crop</span>
               </label>
               <label class="switch-label" for="fallbackToggle">
                 <input id="fallbackToggle" type="checkbox">
                 <span>Use original if no crop</span>
+              </label>
+              <label class="switch-label" for="visualRerankToggle">
+                <input id="visualRerankToggle" type="checkbox">
+                <span>SigLIP rerank</span>
+              </label>
+              <label class="switch-label" for="cardCodeOcrToggle">
+                <input id="cardCodeOcrToggle" type="checkbox" checked>
+                <span>Card code OCR</span>
               </label>
             </div>
             <label>

@@ -262,7 +262,8 @@ button svg {
 }
 
 .settings-panel input[type="url"],
-.settings-panel input[type="number"] {
+.settings-panel input[type="number"],
+.settings-panel select {
   width: 100%;
   min-height: 40px;
   border: 1px solid #bdc8c3;
@@ -318,7 +319,7 @@ button svg {
 
 .timing-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(72px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(64px, 1fr));
   gap: 8px;
 }
 
