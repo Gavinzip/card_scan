@@ -9,3 +9,6 @@ faiss-cpu
 ultralytics
 opencv-python-headless
 huggingface-hub
+rapidocr-onnxruntime
+zxing-cpp>=3.0.0
+rembg

@@ -2,16 +2,21 @@
 from __future__ import annotations
 
 import base64
+import csv
+import importlib.util
 import json
 import os
 import re
 import subprocess
 import time
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 import tempfile
 from typing import Any
+from urllib.error import HTTPError, URLError
 from urllib.parse import quote
+from urllib.request import Request, urlopen
 
 # Importing PyTorch, OpenCV/Ultralytics, and FAISS in one service can load
 # multiple OpenMP runtimes on macOS. Linux Docker builds are usually fine, but
@@ -48,12 +53,13 @@ FRONTEND_INDEX = FRONTEND_DIR / "index.html"
 FRONTEND_ASSETS = FRONTEND_DIR / "assets"
 
 DEFAULT_INDEXES = (
-    "pokemon_en=data/processed/image_index,"
-    "pokemon_ja=data/processed/pokemon_ja_canonical_image_index"
+    "pokemon_en=data/processed/image_index_base,"
+    "pokemon_ja=data/processed/pokemon_ja_canonical_image_index_base,"
+    "onepiece=data/processed/onepiece_image_index_base"
 )
 
 INDEX_CONFIG = os.environ.get("CARD_SCAN_INDEXES", DEFAULT_INDEXES)
-CROP_MODEL_PATH = Path(os.environ.get("CARD_SCAN_CROP_MODEL_PATH", ROOT / "data/models/cardcaptor_v3_best.pt"))
+CROP_MODEL_PATH = Path(os.environ.get("CARD_SCAN_CROP_MODEL_PATH", ROOT / "data/models/production/current/cardcaptor_v3_best.pt"))
 CROP_MODEL_REPO = os.environ.get("CARD_SCAN_CROP_MODEL_REPO", DEFAULT_REPO_ID)
 CROP_MODEL_FILE = os.environ.get("CARD_SCAN_CROP_MODEL_FILE", DEFAULT_MODEL_FILE)
 DEFAULT_CONFIDENCE = float(os.environ.get("CARD_SCAN_CROP_CONFIDENCE", "0.25"))
@@ -63,7 +69,7 @@ DEFAULT_TARGET_ASPECT = float(os.environ.get("CARD_SCAN_CROP_TARGET_ASPECT", str
 DEFAULT_ASPECT_TOLERANCE = float(os.environ.get("CARD_SCAN_CROP_ASPECT_TOLERANCE", "0.05"))
 DEFAULT_DEVICE = os.environ.get("CARD_SCAN_DEVICE") or None
 DEFAULT_RERANK_MODEL = os.environ.get("CARD_SCAN_RERANK_MODEL", "siglip").strip().lower()
-DEFAULT_VISUAL_RERANK_CANDIDATES = int(os.environ.get("CARD_SCAN_VISUAL_RERANK_CANDIDATES", "100"))
+DEFAULT_VISUAL_RERANK_CANDIDATES = int(os.environ.get("CARD_SCAN_VISUAL_RERANK_CANDIDATES", "5"))
 DEFAULT_VISUAL_RERANK_WEIGHT = float(os.environ.get("CARD_SCAN_VISUAL_RERANK_WEIGHT", "0.40"))
 DEFAULT_VISUAL_COLOR_WEIGHT = float(os.environ.get("CARD_SCAN_VISUAL_COLOR_WEIGHT", "0.50"))
 DEFAULT_SIGLIP_MODEL = os.environ.get("CARD_SCAN_SIGLIP_MODEL", "vit_base_patch16_siglip_224.webli")
@@ -71,12 +77,59 @@ DEFAULT_SIGLIP_BATCH_SIZE = int(os.environ.get("CARD_SCAN_SIGLIP_BATCH_SIZE", "3
 DEFAULT_CARD_CODE_OCR = os.environ.get("CARD_SCAN_CARD_CODE_OCR", "false").lower() in {"1", "true", "yes"}
 DEFAULT_CARD_CODE_OCR_TIMEOUT = float(os.environ.get("CARD_SCAN_CARD_CODE_OCR_TIMEOUT", "8"))
 DEFAULT_CARD_CODE_OCR_EXACT_BOOST = float(os.environ.get("CARD_SCAN_CARD_CODE_OCR_EXACT_BOOST", "0.09"))
+DEFAULT_LANGUAGE_RERANK = os.environ.get("CARD_SCAN_LANGUAGE_RERANK", "true").lower() in {"1", "true", "yes"}
+DEFAULT_LANGUAGE_RERANK_BOOST = float(os.environ.get("CARD_SCAN_LANGUAGE_RERANK_BOOST", "0.08"))
+DEFAULT_LANGUAGE_RERANK_CANDIDATES = int(os.environ.get("CARD_SCAN_LANGUAGE_RERANK_CANDIDATES", "25"))
+DEFAULT_LANGUAGE_OCR = os.environ.get("CARD_SCAN_LANGUAGE_OCR", "false").lower() in {"1", "true", "yes"}
+DEFAULT_LANGUAGE_OCR_ENGINE = os.environ.get("CARD_SCAN_LANGUAGE_OCR_ENGINE", "rapidocr").strip().lower()
+DEFAULT_LANGUAGE_OCR_TIMEOUT = float(os.environ.get("CARD_SCAN_LANGUAGE_OCR_TIMEOUT", "6"))
+DEFAULT_HINT_CARD_CODE_BOOST = float(os.environ.get("CARD_SCAN_HINT_CARD_CODE_BOOST", "0.10"))
+DEFAULT_SLAB_BARCODE_LOOKUP = os.environ.get("CARD_SCAN_SLAB_BARCODE_LOOKUP", "true").lower() in {"1", "true", "yes"}
+DEFAULT_SLAB_BARCODE_SCAN_ALWAYS = os.environ.get("CARD_SCAN_SLAB_BARCODE_SCAN_ALWAYS", "false").lower() in {"1", "true", "yes"}
+DEFAULT_SLAB_LABEL_OCR = os.environ.get("CARD_SCAN_SLAB_LABEL_OCR", "true").lower() in {"1", "true", "yes"}
+DEFAULT_SLAB_LABEL_OCR_ENGINE = os.environ.get("CARD_SCAN_SLAB_LABEL_OCR_ENGINE", "rapidocr").strip().lower()
+SLAB_CERT_LOOKUP_PATH = os.environ.get("CARD_SCAN_SLAB_CERT_LOOKUP_PATH", "").strip()
+SLAB_CERT_API_TIMEOUT = float(os.environ.get("CARD_SCAN_SLAB_CERT_API_TIMEOUT", "4"))
+SLAB_CERT_LOOKUP_PROVIDERS = [
+    provider.strip().lower()
+    for provider in os.environ.get("CARD_SCAN_SLAB_CERT_LOOKUP_PROVIDERS", "").split(",")
+    if provider.strip()
+]
+SLAB_CERT_API_LOOKUP_ENABLED = os.environ.get("CARD_SCAN_SLAB_CERT_API_LOOKUP", "false").lower() in {
+    "1",
+    "true",
+    "yes",
+}
+SLAB_LABEL_SET_ALIASES_PATH = Path(
+    os.environ.get("CARD_SCAN_SLAB_LABEL_SET_ALIASES", ROOT / "data/config/slab_label_set_aliases.csv")
+)
+SEREBII_SET_NAME_MAP_PATH = ROOT / "data/config/serebii_pokemon_ja_set_name_map.csv"
+SLAB_CATALOG_LOOKUP_PATHS = [
+    Path(path.strip())
+    for path in os.environ.get(
+        "CARD_SCAN_SLAB_CATALOG_LOOKUP_PATHS",
+        str(ROOT / "data/processed/pokemon_ja_canonical_catalog.jsonl"),
+    ).split(",")
+    if path.strip()
+]
+PSA_PUBLIC_API_TOKEN = os.environ.get("CARD_SCAN_PSA_API_TOKEN", "").strip()
+CGC_DEALER_API_TOKEN = os.environ.get("CARD_SCAN_CGC_DEALER_API_TOKEN", "").strip()
+DEFAULT_AMBIGUOUS_CANDIDATE_SCORE_MARGIN = float(os.environ.get("CARD_SCAN_AMBIGUOUS_CANDIDATE_SCORE_MARGIN", "0.04"))
+DEFAULT_AMBIGUOUS_CANDIDATE_MIN_SCORE = float(os.environ.get("CARD_SCAN_AMBIGUOUS_CANDIDATE_MIN_SCORE", "0.70"))
+DEFAULT_AMBIGUOUS_CANDIDATE_LIMIT = int(os.environ.get("CARD_SCAN_AMBIGUOUS_CANDIDATE_LIMIT", "6"))
 PRELOAD = os.environ.get("CARD_SCAN_PRELOAD", "false").lower() in {"1", "true", "yes"}
 PRELOAD_SIGLIP = os.environ.get("CARD_SCAN_PRELOAD_SIGLIP", "false").lower() in {"1", "true", "yes"}
 PRELOAD_CROP_MODEL = os.environ.get("CARD_SCAN_PRELOAD_CROP_MODEL", "true").lower() in {"1", "true", "yes"}
 REFERENCE_IMAGE_ROUTE = os.environ.get("CARD_SCAN_REFERENCE_IMAGE_ROUTE", "/reference-images").rstrip("/") or "/reference-images"
 REFERENCE_IMAGE_ROOTS_CONFIG = os.environ.get("CARD_SCAN_IMAGE_ROOTS", "")
 LOCAL_PATH_REWRITES_CONFIG = os.environ.get("CARD_SCAN_LOCAL_PATH_REWRITES", "")
+SNKR_MAPPING_FLAGS_PATH = Path(
+    os.environ.get("CARD_SCAN_SNKR_MAPPING_FLAGS", ROOT / "data/config/snkr_product_mapping_flags.csv")
+)
+SUPPRESS_FLAGGED_SNKR_MAPPINGS = os.environ.get(
+    "CARD_SCAN_SUPPRESS_FLAGGED_SNKR_MAPPINGS",
+    "true",
+).lower() in {"1", "true", "yes"}
 CORS_ORIGINS = [
     origin.strip()
     for origin in os.environ.get("CARD_SCAN_CORS_ORIGINS", "").split(",")
@@ -87,6 +140,13 @@ cv2, np, YOLO = require_deps()
 
 app = FastAPI(title="TCG Card Recognition API", version=APP_VERSION)
 VISUAL_SIGNATURE_CACHE: dict[str, tuple[int, int, dict[str, Any]]] = {}
+OCR_ENGINE_CACHE: dict[str, Any] = {}
+BARCODE_ENGINE_CACHE: dict[str, Any] = {}
+SEGMENTATION_ENGINE_CACHE: dict[str, Any] = {}
+SLAB_CERT_LOOKUP_CACHE: dict[str, Any] = {"path": None, "mtime_ns": None, "rows": {}}
+SLAB_LABEL_SET_ALIAS_CACHE: dict[str, Any] = {"paths": None, "mtime_ns": None, "rows": []}
+SLAB_CATALOG_LOOKUP_CACHE: dict[str, Any] = {"paths": None, "mtime_ns": None, "records": []}
+SNKR_MAPPING_FLAGS: dict[str, dict[str, Any]] = {}
 SET_PATTERN = (
     r"(?:PROMO\s*[_-]?\s*SWSH|SWSH|WCS\s*\d{2,}|"
     r"SV\s*[-]?\s*P|S\s*[-]?\s*P|SM\s*[-]?\s*P|XY\s*[-]?\s*P|M\s*[-]?\s*P|"
@@ -94,6 +154,10 @@ SET_PATTERN = (
 )
 CARD_CODE_PATTERN = re.compile(
     rf"\b(?P<set>{SET_PATTERN})\s+(?P<number>[A-Z]?\d{{1,3}}|[A-Z]{{2}}\d{{1,3}})\s*/\s*(?P<total>\d{{1,3}})\b",
+    re.I,
+)
+TRAILING_SET_CARD_CODE_PATTERN = re.compile(
+    rf"\b(?P<number>[A-Z]?\d{{1,3}}|[A-Z]{{2}}\d{{1,3}})\s*/\s*(?P<total>\d{{1,3}})\s+(?P<set>{SET_PATTERN})\b",
     re.I,
 )
 REVERSE_PROMO_PATTERN = re.compile(
@@ -105,6 +169,12 @@ LOOSE_SET_NUMBER_PATTERN = re.compile(
     rf"\b(?P<set>{SET_PATTERN})\s+(?P<number>[A-Z]?\d{{1,3}}|[A-Z]{{2}}\d{{1,3}})\b",
     re.I,
 )
+JAPANESE_SCRIPT_RE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff]")
+JAPANESE_SET_CODE_RE = re.compile(r"\b(?:SV|S|SM|XY|BW|DP|M|L)\d{1,2}[a-z]\b", re.I)
+ENGLISH_SET_CODE_RE = re.compile(r"\b(?:SWSH\d{1,2}|SV\d{1,2}|SM\d{1,2}|XY\d{1,2}|BW\d{1,2}|DP\d{1,2})\b", re.I)
+EXPLICIT_JAPANESE_RE = re.compile(r"POKEMON\s*(?:JAPANESE|JPN|JP)|POKEMONJPN|\b(?:JAPANESE|JPN|JP)\b|日版|日本語|日文", re.I)
+EXPLICIT_ENGLISH_RE = re.compile(r"\b(?:ENGLISH|ENG)\b|英版|英文", re.I)
+LATIN_TEXT_RE = re.compile(r"[A-Za-z]{3,}")
 
 if CORS_ORIGINS:
     app.add_middleware(
@@ -148,12 +218,35 @@ def parse_path_rewrites(config: str) -> list[tuple[Path, Path]]:
     return rewrites
 
 
+def load_snkr_mapping_flags(path: Path) -> dict[str, dict[str, Any]]:
+    if not path.exists():
+        return {}
+    flags: dict[str, dict[str, Any]] = {}
+    with path.open(newline="", encoding="utf-8") as handle:
+        for row in csv.DictReader(handle):
+            product_id = str(row.get("snkr_product_id") or "").strip()
+            if not product_id:
+                continue
+            flags[product_id] = {
+                "severity": row.get("severity") or "suspicious",
+                "card_id": row.get("card_id"),
+                "set_id": row.get("set_id"),
+                "card_code": row.get("card_code"),
+                "catalog_name": row.get("catalog_name"),
+                "snkr_product_name": row.get("snkr_product_name"),
+                "match_reasons": row.get("match_reasons"),
+                "audit_source": str(path),
+            }
+    return flags
+
+
 def safe_url_part(value: str) -> str:
     return "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in value)
 
 
 REFERENCE_IMAGE_ROOTS = parse_named_paths(REFERENCE_IMAGE_ROOTS_CONFIG)
 LOCAL_PATH_REWRITES = parse_path_rewrites(LOCAL_PATH_REWRITES_CONFIG)
+SNKR_MAPPING_FLAGS = load_snkr_mapping_flags(SNKR_MAPPING_FLAGS_PATH)
 
 for image_root_name, image_root_path in REFERENCE_IMAGE_ROOTS.items():
     if image_root_path.exists():
@@ -469,13 +562,62 @@ def existing_local_image_path(local_image_path: str | None) -> Path | None:
     return None
 
 
+def normalize_game_family(value: Any) -> str | None:
+    if value is None:
+        return None
+    normalized = re.sub(r"[^a-z0-9]+", "", str(value).casefold())
+    if not normalized:
+        return None
+    if "onepiece" in normalized or "optcg" in normalized or "opcg" in normalized:
+        return "onepiece"
+    if "pokemon" in normalized:
+        return "pokemon"
+    return None
+
+
+def infer_index_family(index_name: Any) -> str | None:
+    normalized = re.sub(r"[^a-z0-9]+", "", str(index_name or "").casefold())
+    if not normalized:
+        return None
+    if "onepiece" in normalized:
+        return "onepiece"
+    if normalized in {"pokemonen", "pokemonja"} or normalized.startswith("pokemon"):
+        return "pokemon"
+    return None
+
+
+def candidate_family(candidate: dict[str, Any]) -> str | None:
+    for key in ("game_family", "candidate_family", "game"):
+        family = normalize_game_family(candidate.get(key))
+        if family:
+            return family
+    family = infer_index_family(candidate.get("index"))
+    if family:
+        return family
+    for key in ("source", "canonical_source", "image_source", "metadata_source"):
+        family = normalize_game_family(candidate.get(key))
+        if family:
+            return family
+    return None
+
+
+def is_pokemon_candidate(candidate: dict[str, Any]) -> bool:
+    return candidate_family(candidate) == "pokemon"
+
+
 def format_result(index_name: str, rank: int, score: float, record: dict[str, Any]) -> dict[str, Any]:
     remote_image_url = record.get("image_url")
     local_reference_image_url = reference_image_url(record.get("local_image_path"))
+    raw_snkr_product_id = record.get("snkr_product_id")
+    snkr_mapping_flag = SNKR_MAPPING_FLAGS.get(str(raw_snkr_product_id)) if raw_snkr_product_id else None
+    snkr_mapping_suppressed = bool(snkr_mapping_flag and SUPPRESS_FLAGGED_SNKR_MAPPINGS)
+    snkr_product_id = None if snkr_mapping_suppressed else raw_snkr_product_id
+    game_family = candidate_family({**record, "index": index_name})
     return {
         "index": index_name,
         "rank": rank,
         "score": score,
+        "game_family": game_family,
         "game": record.get("game"),
         "source": record.get("source"),
         "source_license": record.get("source_license"),
@@ -487,6 +629,7 @@ def format_result(index_name: str, rank: int, score: float, record: dict[str, An
         "image_source_license": record.get("image_source_license"),
         "card_id": record.get("card_id"),
         "canonical_id": record.get("canonical_id"),
+        "canonical_key": record.get("canonical_key"),
         "set_id": record.get("set_id"),
         "card_code": record.get("card_code"),
         "language": record.get("language"),
@@ -495,6 +638,8 @@ def format_result(index_name: str, rank: int, score: float, record: dict[str, An
         "name_ja": record.get("name_ja"),
         "rarity": record.get("rarity"),
         "variant": record.get("variant"),
+        "edition": record.get("edition"),
+        "variant_source": record.get("variant_source"),
         "image_url": remote_image_url,
         "reference_image_url": local_reference_image_url,
         "display_image_url": remote_image_url or local_reference_image_url,
@@ -506,14 +651,20 @@ def format_result(index_name: str, rank: int, score: float, record: dict[str, An
         "training_allowed": record.get("training_allowed"),
         "reference_index_allowed_internal": record.get("reference_index_allowed_internal"),
         "snkr": {
-            "match_status": record.get("snkr_match_status"),
-            "product_id": record.get("snkr_product_id"),
-            "product_name": record.get("snkr_product_name"),
-            "url": record.get("snkr_url"),
-            "min_price": record.get("snkr_min_price"),
-            "min_price_format": record.get("snkr_min_price_format"),
-            "verified_candidate_count": record.get("snkr_verified_candidate_count"),
+            "match_status": "suppressed_suspicious_mapping" if snkr_mapping_suppressed else record.get("snkr_match_status"),
+            "product_id": snkr_product_id,
+            "has_product_id": bool(snkr_product_id),
+            "product_name": None if snkr_mapping_suppressed else record.get("snkr_product_name"),
+            "url": None if snkr_mapping_suppressed else record.get("snkr_url"),
+            "min_price": None if snkr_mapping_suppressed else record.get("snkr_min_price"),
+            "min_price_format": None if snkr_mapping_suppressed else record.get("snkr_min_price_format"),
+            "verified_candidate_count": None if snkr_mapping_suppressed else record.get("snkr_verified_candidate_count"),
             "matched_at": record.get("snkr_matched_at"),
+            "mapping_flag": snkr_mapping_flag,
+            "mapping_status": snkr_mapping_flag.get("severity") if snkr_mapping_flag else None,
+            "mapping_suppressed": snkr_mapping_suppressed,
+            "suppressed_product_id": raw_snkr_product_id if snkr_mapping_suppressed else None,
+            "suppressed_product_name": record.get("snkr_product_name") if snkr_mapping_suppressed else None,
         },
     }
 
@@ -621,6 +772,18 @@ def normalize_set_for_match(value: str | None) -> str | None:
     text = str(value).upper().replace("_", "-")
     text = re.sub(r"[^A-Z0-9-]", "", text)
     text = re.sub(r"^(SV|S|SM|XY|M)-?P$", r"\1-P", text)
+    promo_aliases = {
+        "BWP": "BWP",
+        "BW-P": "BWP",
+        "DPP": "DPP",
+        "DP-P": "DPP",
+        "XYP": "XYP",
+        "XY-P": "XYP",
+        "SMP": "SMP",
+        "SM-P": "SMP",
+    }
+    if text in promo_aliases:
+        return promo_aliases[text]
     if text in {"SVP", "SV-P"}:
         return "SV-P"
     if text in {"SWSH", "PROMOSWSH", "PROMO-SWSH"}:
@@ -632,6 +795,7 @@ def extract_card_code(text: str) -> dict[str, Any] | None:
     normalized = normalize_ocr_text(text)
     patterns = [
         ("strict", CARD_CODE_PATTERN),
+        ("trailing_set", TRAILING_SET_CARD_CODE_PATTERN),
         ("reverse_promo", REVERSE_PROMO_PATTERN),
         ("swsh_promo", SWSH_PROMO_PATTERN),
         ("loose", LOOSE_SET_NUMBER_PATTERN),
@@ -648,6 +812,326 @@ def extract_card_code(text: str) -> dict[str, Any] | None:
                 "normalized_text": normalized,
             }
     return None
+
+
+def normalize_language(value: str | None) -> str | None:
+    if not value:
+        return None
+    text = str(value).strip().lower().replace("_", "-")
+    aliases = {
+        "ja": "ja",
+        "jp": "ja",
+        "jpn": "ja",
+        "japanese": "ja",
+        "日本語": "ja",
+        "日文": "ja",
+        "日版": "ja",
+        "en": "en",
+        "eng": "en",
+        "english": "en",
+        "英文": "en",
+        "英版": "en",
+    }
+    return aliases.get(text)
+
+
+def infer_language_from_text(text: str | None, source: str) -> dict[str, Any]:
+    raw_text = (text or "").strip()
+    payload: dict[str, Any] = {
+        "source": source,
+        "text": raw_text,
+        "language": None,
+        "confidence": 0.0,
+        "signals": [],
+    }
+    if not raw_text:
+        payload["status"] = "empty"
+        return payload
+
+    direct = normalize_language(raw_text)
+    if direct:
+        payload.update(
+            {
+                "status": "ok",
+                "language": direct,
+                "confidence": 1.0,
+                "signals": [f"explicit:{direct}"],
+            }
+        )
+        return payload
+
+    signals: list[tuple[str, str, float]] = []
+    if JAPANESE_SCRIPT_RE.search(raw_text):
+        signals.append(("ja", "japanese_script", 0.92))
+    if EXPLICIT_JAPANESE_RE.search(raw_text):
+        signals.append(("ja", "explicit_japanese", 0.98))
+    if JAPANESE_SET_CODE_RE.search(raw_text):
+        signals.append(("ja", "japanese_set_code", 0.94))
+    if EXPLICIT_ENGLISH_RE.search(raw_text):
+        signals.append(("en", "explicit_english", 0.96))
+    if ENGLISH_SET_CODE_RE.search(raw_text) and not JAPANESE_SET_CODE_RE.search(raw_text):
+        signals.append(("en", "english_set_code", 0.80))
+
+    if not signals:
+        payload["status"] = "not_found"
+        return payload
+
+    scores: dict[str, float] = {}
+    for language, signal, confidence in signals:
+        scores[language] = max(scores.get(language, 0.0), confidence)
+        payload["signals"].append(signal)
+
+    # Japanese-specific set codes and script should win over generic English words in listing titles.
+    if scores.get("ja", 0.0) >= scores.get("en", 0.0):
+        language = "ja"
+    else:
+        language = "en"
+    payload.update(
+        {
+            "status": "ok",
+            "language": language,
+            "confidence": scores[language],
+        }
+    )
+    return payload
+
+
+def candidate_language(candidate: dict[str, Any]) -> str | None:
+    language = normalize_language(candidate.get("language"))
+    if language:
+        return language
+    index_name = str(candidate.get("index") or "").lower()
+    if index_name.endswith("_ja") or "pokemon_ja" in index_name:
+        return "ja"
+    if index_name.endswith("_en") or "pokemon_en" in index_name:
+        return "en"
+    return None
+
+
+def apply_language_rerank(results: list[dict[str, Any]], language_payload: dict[str, Any], boost: float) -> list[dict[str, Any]]:
+    target = normalize_language(language_payload.get("language"))
+    if language_payload.get("status") != "ok" or target not in {"ja", "en"} or boost <= 0:
+        return results
+
+    reranked: list[dict[str, Any]] = []
+    for result in results:
+        item = dict(result)
+        if not is_pokemon_candidate(item):
+            item["language_hint"] = target
+            item["language_hint_match"] = False
+            item["language_hint_boost"] = 0.0
+            item["language_hint_skipped"] = "non_pokemon_candidate"
+            reranked.append(item)
+            continue
+        language = candidate_language(item)
+        match = language == target
+        item["language_hint"] = target
+        item["language_hint_match"] = match
+        item["language_hint_boost"] = boost if match else 0.0
+        if match:
+            item["pre_language_score"] = item.get("score")
+            item["score"] = float(item.get("score") or 0.0) + boost
+        reranked.append(item)
+
+    reranked.sort(key=lambda item: item["score"], reverse=True)
+    return reranked
+
+
+def build_hint_card_code_payload(text: str | None) -> dict[str, Any]:
+    parsed = extract_card_code(text or "")
+    if not parsed:
+        return {
+            "enabled": bool((text or "").strip()),
+            "status": "not_found" if (text or "").strip() else "skipped",
+            "boost": 0.0,
+        }
+    return {
+        "enabled": True,
+        "status": "ok",
+        "source": "hint_text",
+        "boost": DEFAULT_HINT_CARD_CODE_BOOST,
+        "best": {
+            "text": text,
+            "confidence": 1.0,
+            "parsed": parsed,
+        },
+    }
+
+
+def ocr_image_variants_for_language(card_image: Any) -> list[tuple[str, Any]]:
+    height, width = card_image.shape[:2]
+    scale = min(1.0, 1200 / max(1, max(height, width)))
+    if scale < 1.0:
+        resized = cv2.resize(card_image, (int(round(width * scale)), int(round(height * scale))), interpolation=cv2.INTER_AREA)
+    else:
+        resized = card_image
+    return [
+        ("full", resized),
+        ("top", crop_ratio(resized, (0.00, 0.00, 1.00, 0.42))),
+        ("middle", crop_ratio(resized, (0.00, 0.18, 1.00, 0.76))),
+    ]
+
+
+def rapidocr_available() -> bool:
+    return bool(importlib.util.find_spec("rapidocr_onnxruntime") or importlib.util.find_spec("rapidocr"))
+
+
+def get_rapidocr_engine() -> Any:
+    if "rapidocr" not in OCR_ENGINE_CACHE:
+        try:
+            from rapidocr_onnxruntime import RapidOCR
+        except Exception:
+            from rapidocr import RapidOCR  # type: ignore
+        OCR_ENGINE_CACHE["rapidocr"] = RapidOCR()
+    return OCR_ENGINE_CACHE["rapidocr"]
+
+
+def flatten_rapidocr_result(result: Any) -> tuple[str, float]:
+    if result is None:
+        return "", 0.0
+    if isinstance(result, tuple):
+        result = result[0]
+
+    texts: list[str] = []
+    confidence = 0.0
+    for item in result or []:
+        text = None
+        item_confidence = None
+        if isinstance(item, dict):
+            text = item.get("text") or item.get("rec_text")
+            item_confidence = item.get("confidence") or item.get("rec_score")
+        elif isinstance(item, (list, tuple)) and len(item) >= 2:
+            text = item[1]
+            if len(item) >= 3:
+                item_confidence = item[2]
+        if text:
+            texts.append(str(text))
+        try:
+            confidence = max(confidence, float(item_confidence))
+        except (TypeError, ValueError):
+            pass
+    return "\n".join(texts), confidence
+
+
+def recognize_language_with_rapidocr(card_image: Any) -> dict[str, Any]:
+    if not rapidocr_available():
+        return {"source": "rapidocr", "status": "unavailable", "reason": "rapidocr_onnxruntime is missing"}
+
+    started = time.perf_counter()
+    try:
+        engine = get_rapidocr_engine()
+    except Exception as exc:  # noqa: BLE001
+        return {"source": "rapidocr", "status": "unavailable", "reason": str(exc)}
+
+    texts: list[str] = []
+    max_confidence = 0.0
+    with tempfile.TemporaryDirectory() as temp:
+        temp_path = Path(temp)
+        for variant_name, variant_image in ocr_image_variants_for_language(card_image):
+            path = temp_path / f"language_{variant_name}.png"
+            cv2.imwrite(str(path), variant_image)
+            try:
+                result = engine(str(path))
+            except Exception as exc:  # noqa: BLE001
+                return {
+                    "source": "rapidocr",
+                    "status": "error",
+                    "seconds": time.perf_counter() - started,
+                    "error": f"{variant_name}: {exc}",
+                }
+            text, confidence = flatten_rapidocr_result(result)
+            if text:
+                texts.append(text)
+            max_confidence = max(max_confidence, confidence)
+
+    text = "\n".join(texts)
+    payload = infer_language_from_text(text, source="rapidocr")
+    if payload.get("status") == "not_found" and LATIN_TEXT_RE.search(text):
+        payload.update({"status": "ok", "language": "en", "confidence": 0.55, "signals": ["latin_text"]})
+    payload["seconds"] = time.perf_counter() - started
+    payload["ocr_confidence"] = max_confidence
+    return payload
+
+
+def recognize_language_with_vision_ocr(card_image: Any) -> dict[str, Any]:
+    swift_script = ROOT / "scripts/quality/ocr_vision_text.swift"
+    if not swift_script.exists():
+        return {"source": "vision", "status": "unavailable", "reason": "ocr_vision_text.swift is missing"}
+
+    started = time.perf_counter()
+    with tempfile.TemporaryDirectory() as temp:
+        temp_path = Path(temp)
+        image_paths: list[Path] = []
+        for variant_name, variant_image in ocr_image_variants_for_language(card_image):
+            path = temp_path / f"language_{variant_name}.png"
+            cv2.imwrite(str(path), variant_image)
+            image_paths.append(path)
+
+        command = ["swift", str(swift_script), *[str(path) for path in image_paths]]
+        try:
+            completed = subprocess.run(
+                command,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=DEFAULT_LANGUAGE_OCR_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired:
+            return {
+                "source": "vision",
+                "status": "timeout",
+                "seconds": time.perf_counter() - started,
+                "timeout_seconds": DEFAULT_LANGUAGE_OCR_TIMEOUT,
+            }
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "source": "vision",
+                "status": "error",
+                "seconds": time.perf_counter() - started,
+                "error": str(exc),
+            }
+
+    texts: list[str] = []
+    max_confidence = 0.0
+    for line in completed.stdout.splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        text = row.get("text") or ""
+        if text:
+            texts.append(text)
+        max_confidence = max(
+            max_confidence,
+            max([item.get("confidence") or 0.0 for item in row.get("observations") or []], default=0.0),
+        )
+
+    payload = infer_language_from_text("\n".join(texts), source="vision")
+    payload["seconds"] = time.perf_counter() - started
+    payload["ocr_confidence"] = max_confidence
+    return payload
+
+
+def recognize_language_with_ocr(card_image: Any, engine: str | None = None) -> dict[str, Any]:
+    normalized_engine = (engine or DEFAULT_LANGUAGE_OCR_ENGINE or "rapidocr").strip().lower().replace("-", "_")
+    if normalized_engine in {"rapidocr", "rapid"}:
+        return recognize_language_with_rapidocr(card_image)
+    if normalized_engine in {"vision", "macos_vision", "macos"}:
+        return recognize_language_with_vision_ocr(card_image)
+    if normalized_engine == "auto":
+        rapid_payload = recognize_language_with_rapidocr(card_image)
+        if rapid_payload.get("status") in {"ok", "not_found"}:
+            return rapid_payload
+        vision_payload = recognize_language_with_vision_ocr(card_image)
+        vision_payload["fallback_from"] = rapid_payload
+        return vision_payload
+    return {
+        "source": normalized_engine,
+        "status": "error",
+        "reason": f"Unsupported language OCR engine: {engine}",
+    }
 
 
 def better_card_code_attempt(candidate: dict[str, Any], best: dict[str, Any] | None) -> bool:
@@ -753,7 +1237,12 @@ def candidate_matches_ocr_code(candidate: dict[str, Any], parsed: dict[str, Any]
     return ocr_set == candidate_set and ocr_number == candidate_number
 
 
-def apply_card_code_ocr_boost(results: list[dict[str, Any]], ocr_payload: dict[str, Any], boost: float) -> list[dict[str, Any]]:
+def apply_card_code_ocr_boost(
+    results: list[dict[str, Any]],
+    ocr_payload: dict[str, Any],
+    boost: float,
+    field_prefix: str = "ocr_card_code",
+) -> list[dict[str, Any]]:
     best = ocr_payload.get("best") or {}
     parsed = best.get("parsed") or {}
     if ocr_payload.get("status") != "ok" or not parsed:
@@ -762,16 +1251,115 @@ def apply_card_code_ocr_boost(results: list[dict[str, Any]], ocr_payload: dict[s
     boosted: list[dict[str, Any]] = []
     for result in results:
         item = dict(result)
+        if not is_pokemon_candidate(item):
+            item[f"{field_prefix}_match"] = False
+            item[f"{field_prefix}_boost"] = 0.0
+            item[f"{field_prefix}_skipped"] = "non_pokemon_candidate"
+            boosted.append(item)
+            continue
         match = candidate_matches_ocr_code(item, parsed)
-        item["ocr_card_code_match"] = match
-        item["ocr_card_code_boost"] = boost if match else 0.0
+        item[f"{field_prefix}_match"] = match
+        item[f"{field_prefix}_boost"] = boost if match else 0.0
         if match:
-            item["pre_ocr_score"] = item.get("score")
+            item[f"pre_{field_prefix}_score"] = item.get("score")
             item["score"] = float(item.get("score") or 0.0) + boost
         boosted.append(item)
 
     boosted.sort(key=lambda item: item["score"], reverse=True)
     return boosted
+
+
+def normalized_candidate_subject(candidate: dict[str, Any]) -> str | None:
+    for key in ("name_ja", "name_en", "name"):
+        value = candidate.get(key)
+        if value:
+            text = unicodedata.normalize("NFKC", str(value)).casefold()
+            text = re.sub(r"[\s\-_・:：'\"`´’‘“”()\[\]{}<>/\\|.,]+", "", text)
+            return text or None
+    return None
+
+
+def candidate_similarity_score(candidate: dict[str, Any]) -> float:
+    for key in (
+        "pre_ocr_card_code_score",
+        "pre_hint_card_code_score",
+        "embedding_score",
+        "pre_language_score",
+        "score",
+    ):
+        value = candidate.get(key)
+        if isinstance(value, (int, float)):
+            return float(value)
+    return 0.0
+
+
+def candidate_has_exact_code_signal(candidate: dict[str, Any]) -> bool:
+    return bool(candidate.get("ocr_card_code_match") or candidate.get("hint_card_code_match"))
+
+
+def build_candidate_selection(results: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if len(results) < 2:
+        return None
+
+    top = results[0]
+    top_subject = normalized_candidate_subject(top)
+    top_language = candidate_language(top)
+    top_family = candidate_family(top)
+    top_score = float(top.get("score") or 0.0)
+    top_similarity = candidate_similarity_score(top)
+    if top_score < DEFAULT_AMBIGUOUS_CANDIDATE_MIN_SCORE and top_similarity < DEFAULT_AMBIGUOUS_CANDIDATE_MIN_SCORE:
+        return None
+
+    selected: list[dict[str, Any]] = [top]
+    reasons: set[str] = set()
+    for candidate in results[1:]:
+        if len(selected) >= DEFAULT_AMBIGUOUS_CANDIDATE_LIMIT:
+            break
+        if candidate.get("card_id") == top.get("card_id"):
+            continue
+
+        subject = normalized_candidate_subject(candidate)
+        same_subject = bool(top_subject and subject and top_subject == subject)
+        candidate_family_value = candidate_family(candidate)
+        same_family = not top_family or not candidate_family_value or top_family == candidate_family_value
+        candidate_language_value = candidate_language(candidate)
+        same_language = not top_language or not candidate_language_value or top_language == candidate_language_value
+        if not same_subject or not same_family or not same_language:
+            continue
+
+        score = float(candidate.get("score") or 0.0)
+        similarity = candidate_similarity_score(candidate)
+        close_score = abs(top_score - score) <= DEFAULT_AMBIGUOUS_CANDIDATE_SCORE_MARGIN
+        close_similarity = abs(top_similarity - similarity) <= DEFAULT_AMBIGUOUS_CANDIDATE_SCORE_MARGIN
+        exact_code_signal = candidate_has_exact_code_signal(candidate) or candidate_has_exact_code_signal(top)
+        if close_score or close_similarity or exact_code_signal:
+            item = dict(candidate)
+            item["ambiguity_score_delta"] = abs(top_score - score)
+            item["ambiguity_similarity_delta"] = abs(top_similarity - similarity)
+            selected.append(item)
+            if close_score:
+                reasons.add("close_final_score")
+            if close_similarity:
+                reasons.add("close_visual_score")
+            if exact_code_signal:
+                reasons.add("card_code_signal")
+
+    if len(selected) < 2:
+        return None
+
+    exact_matches = [candidate for candidate in selected if candidate_has_exact_code_signal(candidate)]
+    recommended = exact_matches[0] if len(exact_matches) == 1 else selected[0]
+    status = "resolved_by_card_code" if len(exact_matches) == 1 else "needs_user_choice"
+    return {
+        "status": status,
+        "reason": "same_subject_close_versions",
+        "reasons": sorted(reasons) or ["same_subject_close_versions"],
+        "recommended_card_id": recommended.get("card_id"),
+        "recommended_rank": recommended.get("rank"),
+        "needs_user_choice": status != "resolved_by_card_code",
+        "score_margin": DEFAULT_AMBIGUOUS_CANDIDATE_SCORE_MARGIN,
+        "candidates": selected,
+    }
 
 
 def trim_box_to_aspect(box: tuple[int, int, int, int], width: int, height: int, target_aspect: float) -> tuple[int, int, int, int]:
@@ -838,7 +1426,252 @@ def horizontal_run_ratio(mask: Any, min_column_coverage: float = 0.04) -> float:
     return float(best / max(1, columns.shape[0]))
 
 
-def psa_label_score(image: Any) -> dict[str, float]:
+def mask_runs(values: Any) -> list[tuple[int, int]]:
+    runs: list[tuple[int, int]] = []
+    start: int | None = None
+    for index, value in enumerate(values):
+        if value and start is None:
+            start = index
+        if (not value or index == len(values) - 1) and start is not None:
+            end = index if not value else index + 1
+            runs.append((start, end))
+            start = None
+    return runs
+
+
+def slab_label_panel_body_signal(image: Any, box: tuple[int, int, int, int]) -> dict[str, Any]:
+    height, width = image.shape[:2]
+    x1, _y1, x2, y2 = box
+    lower_top = max(y2 + int(round(height * 0.025)), int(round(height * 0.20)))
+    lower_bottom = int(round(height * 0.96))
+    lower_left = max(0, x1 - int(round(width * 0.12)))
+    lower_right = min(width, x2 + int(round(width * 0.12)))
+    if lower_top >= lower_bottom or lower_left >= lower_right:
+        return {"detected": False, "candidate_count": 0}
+
+    lower = image[lower_top:lower_bottom, lower_left:lower_right]
+    hsv = cv2.cvtColor(lower, cv2.COLOR_BGR2HSV)
+    saturation = hsv[:, :, 1]
+    value = hsv[:, :, 2]
+    mask = (((saturation > 42) & (value > 35)) | ((value < 115) & (saturation > 12))).astype("uint8") * 255
+    kernel_size = max(7, (min(width, height) // 85) | 1)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (kernel_size, kernel_size))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    candidates: list[dict[str, Any]] = []
+    for contour in contours:
+        x, y, box_width, box_height = cv2.boundingRect(contour)
+        if box_width <= 0 or box_height <= 0:
+            continue
+        full_x = x + lower_left
+        full_y = y + lower_top
+        area_ratio = (box_width * box_height) / max(1, width * height)
+        aspect = box_width / max(1, box_height)
+        center_x = (full_x + (box_width / 2)) / max(1, width)
+        if area_ratio < 0.045 or box_height < height * 0.18:
+            continue
+        if not 0.38 <= aspect <= 0.95:
+            continue
+        candidates.append(
+            {
+                "box_ratio": {
+                    "left": full_x / width,
+                    "top": full_y / height,
+                    "right": (full_x + box_width) / width,
+                    "bottom": (full_y + box_height) / height,
+                },
+                "area_ratio": area_ratio,
+                "aspect": aspect,
+                "center_x": center_x,
+                "score": area_ratio - (abs(center_x - 0.5) * 0.08),
+            }
+        )
+
+    candidates.sort(key=lambda item: item["score"], reverse=True)
+    return {
+        "detected": bool(candidates),
+        "candidate_count": len(candidates),
+        "best": candidates[0] if candidates else None,
+    }
+
+
+def detect_slab_label_panel(image: Any) -> dict[str, Any]:
+    height, width = image.shape[:2]
+    if height <= 0 or width <= 0:
+        return {"detected": False, "candidate_count": 0}
+
+    search_bottom = max(1, int(round(height * 0.34)))
+    margin_x = int(round(width * 0.025))
+    band = image[0:search_bottom, margin_x : width - margin_x]
+    if band.size == 0:
+        return {"detected": False, "candidate_count": 0}
+
+    hsv = cv2.cvtColor(band, cv2.COLOR_BGR2HSV)
+    saturation = hsv[:, :, 1]
+    value = hsv[:, :, 2]
+    light_neutral = (((saturation < 72) & (value > 118)) | ((saturation < 95) & (value > 165))).astype("uint8") * 255
+    candidates: list[dict[str, Any]] = []
+
+    def add_candidate(
+        x: int,
+        y: int,
+        box_width: int,
+        box_height: int,
+        source: str,
+        source_score: float = 0.0,
+    ) -> None:
+        if box_width <= 0 or box_height <= 0:
+            return
+        full_x = x + margin_x
+        full_y = y
+        aspect = box_width / max(1, box_height)
+        width_ratio = box_width / max(1, width)
+        height_ratio = box_height / max(1, height)
+        area_ratio = (box_width * box_height) / max(1, width * height)
+        center_y = (full_y + (box_height / 2)) / max(1, height)
+        center_x = (full_x + (box_width / 2)) / max(1, width)
+        if not 3.0 <= aspect <= 12.0:
+            return
+        if not 0.025 <= area_ratio <= 0.22:
+            return
+        if not 0.36 <= width_ratio <= 0.96:
+            return
+        if not 0.025 <= height_ratio <= 0.20:
+            return
+        if center_y >= 0.28 or full_y / max(1, height) >= 0.22:
+            return
+        mask_crop = light_neutral[y : y + box_height, x : x + box_width]
+        fill_ratio = float(mask_crop.mean() / 255.0) if mask_crop.size else 0.0
+        if fill_ratio < 0.22:
+            return
+        full_box = (full_x, full_y, full_x + box_width, full_y + box_height)
+        body_signal = slab_label_panel_body_signal(image, full_box)
+        center_penalty = abs(center_x - 0.5)
+        aspect_bonus = 1.0 - min(1.0, abs(aspect - 6.0) / 6.0)
+        body_bonus = 0.12 if body_signal.get("detected") else 0.0
+        score = (
+            (width_ratio * 0.40)
+            + (fill_ratio * 0.24)
+            + (aspect_bonus * 0.18)
+            + body_bonus
+            + source_score
+            - (center_penalty * 0.18)
+        )
+        candidates.append(
+            {
+                "source": source,
+                "box_ratio": {
+                    "left": full_x / width,
+                    "top": full_y / height,
+                    "right": (full_x + box_width) / width,
+                    "bottom": (full_y + box_height) / height,
+                },
+                "aspect": aspect,
+                "width_ratio": width_ratio,
+                "height_ratio": height_ratio,
+                "area_ratio": area_ratio,
+                "center_x": center_x,
+                "center_y": center_y,
+                "fill_ratio": fill_ratio,
+                "body_below": body_signal,
+                "score": score,
+            }
+        )
+
+    def add_row_band_candidates(mask: Any) -> None:
+        row_coverage = (mask > 0).mean(axis=1)
+        for row_threshold in (0.18, 0.26, 0.34, 0.42):
+            for y1, y2 in mask_runs(row_coverage >= row_threshold):
+                box_height = y2 - y1
+                if not int(round(height * 0.025)) <= box_height <= int(round(height * 0.20)):
+                    continue
+                if ((y1 + y2) / 2) / max(1, height) >= 0.30:
+                    continue
+                slice_mask = mask[y1:y2] > 0
+                column_coverage = slice_mask.mean(axis=0)
+                column_runs = mask_runs(column_coverage >= 0.12)
+                if not column_runs:
+                    continue
+                x1, x2 = max(column_runs, key=lambda item: item[1] - item[0])
+                add_candidate(
+                    x1,
+                    y1,
+                    x2 - x1,
+                    box_height,
+                    "light_neutral_row_band",
+                    source_score=min(0.08, float(row_coverage[y1:y2].mean()) * 0.08),
+                )
+
+    kernel_w = max(9, (width // 95) | 1)
+    kernel_h = max(3, (height // 500) | 1)
+    row_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (kernel_w, kernel_h))
+    row_mask = cv2.morphologyEx(light_neutral, cv2.MORPH_CLOSE, row_kernel, iterations=1)
+    add_row_band_candidates(row_mask)
+
+    hue = hsv[:, :, 0]
+    red_mask = (((hue < 12) | (hue > 168)) & (saturation > 45) & (value > 50)).astype("uint8") * 255
+    red_kernel = cv2.getStructuringElement(
+        cv2.MORPH_RECT,
+        (max(11, (width // 90) | 1), max(3, (height // 500) | 1)),
+    )
+    red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_CLOSE, red_kernel, iterations=1)
+    red_row_coverage = (red_mask > 0).mean(axis=1)
+    for row_threshold in (0.05, 0.08, 0.12):
+        for y1, y2 in mask_runs(red_row_coverage >= row_threshold):
+            red_height = y2 - y1
+            if red_height <= 0 or red_height > height * 0.08:
+                continue
+            if ((y1 + y2) / 2) / max(1, height) >= 0.28:
+                continue
+            slice_mask = red_mask[y1:y2] > 0
+            column_coverage = slice_mask.mean(axis=0)
+            column_runs = mask_runs(column_coverage >= 0.018)
+            if not column_runs:
+                continue
+            x1, x2 = max(column_runs, key=lambda item: item[1] - item[0])
+            box_width = x2 - x1
+            if box_width / max(1, width) < 0.36:
+                continue
+            estimated_height = int(
+                round(
+                    max(
+                        red_height * 2.2,
+                        box_width / 5.2,
+                        height * 0.045,
+                    )
+                )
+            )
+            estimated_height = min(estimated_height, int(round(height * 0.18)))
+            estimated_y = max(0, int(round(y1 - (estimated_height * 0.10))))
+            add_candidate(
+                x1,
+                estimated_y,
+                box_width,
+                estimated_height,
+                "red_label_border_estimate",
+                source_score=min(0.10, float(red_row_coverage[y1:y2].mean()) * 0.16),
+            )
+
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (max(13, (width // 55) | 1), max(5, (height // 260) | 1)))
+    contour_mask = cv2.morphologyEx(light_neutral, cv2.MORPH_CLOSE, kernel, iterations=2)
+    contour_mask = cv2.morphologyEx(contour_mask, cv2.MORPH_OPEN, kernel, iterations=1)
+    contours, _ = cv2.findContours(contour_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    for contour in contours:
+        x, y, box_width, box_height = cv2.boundingRect(contour)
+        add_candidate(x, y, box_width, box_height, "light_neutral_contour")
+
+    candidates.sort(key=lambda item: item["score"], reverse=True)
+    best = candidates[0] if candidates else None
+    return {
+        "detected": bool(best),
+        "candidate_count": len(candidates),
+        "best": best,
+    }
+
+
+def psa_label_score(image: Any) -> dict[str, Any]:
     height, width = image.shape[:2]
     band = image[int(height * 0.03) : int(height * 0.23), int(width * 0.04) : int(width * 0.96)]
     if band.size == 0:
@@ -847,6 +1680,8 @@ def psa_label_score(image: Any) -> dict[str, float]:
             "red_ratio": 0.0,
             "score": 0.0,
             "is_psa_label": False,
+            "is_slab_label_region": False,
+            "red_background_flood": False,
             "red_component_width_ratio": 0.0,
             "white_component_width_ratio": 0.0,
         }
@@ -862,6 +1697,13 @@ def psa_label_score(image: Any) -> dict[str, float]:
     red_component = largest_component_stats(red_mask)
     white_horizontal_run = horizontal_run_ratio(white_mask)
     red_horizontal_run = horizontal_run_ratio(red_mask)
+    panel = detect_slab_label_panel(image)
+    red_background_flood = (
+        red_ratio >= 0.14
+        and red_component["width_ratio"] >= 0.94
+        and red_component["height_ratio"] >= 0.88
+        and red_horizontal_run >= 0.72
+    )
     is_psa_label = (
         white_ratio >= 0.18
         and red_ratio >= 0.035
@@ -873,12 +1715,19 @@ def psa_label_score(image: Any) -> dict[str, float]:
         and red_component["area_ratio"] >= 0.03
         and white_horizontal_run >= 0.34
         and red_horizontal_run >= 0.32
+        and not red_background_flood
     )
+    panel_best = panel.get("best") or {}
+    panel_body = panel_best.get("body_below") or {}
+    is_slab_label_region = bool(panel.get("detected") and panel_body.get("detected") and not red_background_flood)
     return {
         "white_ratio": white_ratio,
         "red_ratio": red_ratio,
         "score": min(1.0, white_ratio + (red_ratio * 1.5)),
         "is_psa_label": is_psa_label,
+        "is_slab_label_region": is_slab_label_region,
+        "label_panel": panel,
+        "red_background_flood": red_background_flood,
         "white_component_width_ratio": white_component["width_ratio"],
         "white_component_area_ratio": white_component["area_ratio"],
         "red_component_width_ratio": red_component["width_ratio"],
@@ -887,6 +1736,1097 @@ def psa_label_score(image: Any) -> dict[str, float]:
         "red_component_height_ratio": red_component["height_ratio"],
         "white_horizontal_run_ratio": white_horizontal_run,
         "red_horizontal_run_ratio": red_horizontal_run,
+    }
+
+
+def zxing_available() -> bool:
+    return bool(importlib.util.find_spec("zxingcpp"))
+
+
+def get_zxingcpp() -> Any:
+    if "zxingcpp" not in BARCODE_ENGINE_CACHE:
+        import zxingcpp  # type: ignore
+
+        BARCODE_ENGINE_CACHE["zxingcpp"] = zxingcpp
+    return BARCODE_ENGINE_CACHE["zxingcpp"]
+
+
+def normalize_cert_key(value: str | None) -> str | None:
+    if not value:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    digits = re.sub(r"\D", "", text)
+    return digits or text.upper()
+
+
+def slab_barcode_text_type(text: str) -> str:
+    value = text.strip()
+    if re.fullmatch(r"\d{7,10}", value):
+        return "numeric_cert_like"
+    if re.fullmatch(r"\d+", value):
+        return "numeric_other_length"
+    if value.lower().startswith(("http://", "https://")):
+        return "url"
+    return "other_text"
+
+
+def slab_barcode_candidates(image: Any) -> list[dict[str, Any]]:
+    if not zxing_available():
+        return []
+    zxingcpp = get_zxingcpp()
+    height, width = image.shape[:2]
+    rois = {
+        "full": image,
+        "top45": image[: int(height * 0.45), :],
+        "top30": image[: int(height * 0.30), :],
+        "top_center": image[: int(height * 0.35), int(width * 0.05) : int(width * 0.95)],
+    }
+    found: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for roi_name, roi in rois.items():
+        if roi.size == 0:
+            continue
+        for scale in (1, 2):
+            scan = roi if scale == 1 else cv2.resize(roi, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+            try:
+                decoded = zxingcpp.read_barcodes(scan)
+            except Exception:  # noqa: BLE001
+                decoded = []
+            for item in decoded:
+                text = str(getattr(item, "text", "") or "").strip()
+                barcode_format = str(getattr(item, "format", "") or "")
+                if not text:
+                    continue
+                key = (barcode_format, text)
+                if key in seen:
+                    continue
+                seen.add(key)
+                found.append(
+                    {
+                        "format": barcode_format,
+                        "text": text,
+                        "text_type": slab_barcode_text_type(text),
+                        "cert_key": normalize_cert_key(text),
+                        "roi": roi_name,
+                        "scale": scale,
+                    }
+                )
+    return found
+
+
+def load_slab_cert_lookup() -> dict[str, dict[str, Any]]:
+    if not SLAB_CERT_LOOKUP_PATH:
+        return {}
+    path = Path(SLAB_CERT_LOOKUP_PATH)
+    if not path.exists():
+        return {}
+    try:
+        mtime_ns = path.stat().st_mtime_ns
+    except OSError:
+        return {}
+    if SLAB_CERT_LOOKUP_CACHE.get("path") == str(path) and SLAB_CERT_LOOKUP_CACHE.get("mtime_ns") == mtime_ns:
+        return dict(SLAB_CERT_LOOKUP_CACHE.get("rows") or {})
+
+    rows: dict[str, dict[str, Any]] = {}
+    if path.suffix.lower() == ".csv":
+        with path.open(newline="", encoding="utf-8") as handle:
+            records = list(csv.DictReader(handle))
+    elif path.suffix.lower() in {".jsonl", ".ndjson"}:
+        records = list(iter_jsonl(path))
+    else:
+        payload = read_json(path)
+        if isinstance(payload, dict):
+            records = []
+            for key, value in payload.items():
+                record = dict(value) if isinstance(value, dict) else {"value": value}
+                record.setdefault("cert", key)
+                records.append(record)
+        elif isinstance(payload, list):
+            records = [item for item in payload if isinstance(item, dict)]
+        else:
+            records = []
+
+    for record in records:
+        cert = (
+            record.get("cert")
+            or record.get("psa_cert")
+            or record.get("certificate")
+            or record.get("certificate_number")
+            or record.get("barcode")
+            or record.get("barcode_text")
+        )
+        key = normalize_cert_key(str(cert) if cert is not None else None)
+        if key:
+            rows[key] = dict(record)
+    SLAB_CERT_LOOKUP_CACHE.update({"path": str(path), "mtime_ns": mtime_ns, "rows": rows})
+    return rows
+
+
+SLAB_TEXT_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "card",
+    "cards",
+    "japan",
+    "japanese",
+    "pokemon",
+    "tcg",
+    "the",
+}
+
+
+def normalize_lookup_key(value: Any) -> str:
+    text = unicodedata.normalize("NFKD", str(value or "")).encode("ascii", "ignore").decode("ascii")
+    return re.sub(r"[^a-z0-9]", "", text.lower())
+
+
+def deep_find_scalar(payload: Any, candidate_keys: list[str]) -> Any:
+    normalized_keys = {normalize_lookup_key(key) for key in candidate_keys}
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            if normalize_lookup_key(key) in normalized_keys and not isinstance(value, (dict, list)):
+                return value
+        for value in payload.values():
+            found = deep_find_scalar(value, candidate_keys)
+            if found not in (None, ""):
+                return found
+    elif isinstance(payload, list):
+        for value in payload:
+            found = deep_find_scalar(value, candidate_keys)
+            if found not in (None, ""):
+                return found
+    return None
+
+
+def text_tokens(*values: Any) -> set[str]:
+    joined = " ".join(str(value) for value in values if value not in (None, ""))
+    text = unicodedata.normalize("NFKD", joined).encode("ascii", "ignore").decode("ascii").lower()
+    raw_tokens = set(re.findall(r"[a-z0-9]+", text))
+    tokens: set[str] = set()
+    embedded_terms = (
+        "anniversary",
+        "champion",
+        "collection",
+        "concept",
+        "dark",
+        "expansion",
+        "legendary",
+        "premium",
+        "pack",
+        "phantasma",
+        "promo",
+        "shine",
+        "shiny",
+    )
+    for token in raw_tokens:
+        if token in SLAB_TEXT_STOPWORDS:
+            continue
+        tokens.add(token)
+        compact = token.replace("0", "o") if any(char.isalpha() for char in token) else token
+        if token.startswith("exp"):
+            tokens.add("expansion")
+        if "anniv" in token:
+            tokens.add("anniversary")
+            number = re.match(r"(\d{1,2})(?:st|nd|rd|th)?anniv", token)
+            if number:
+                tokens.add(f"{number.group(1)}th")
+        if token.endswith("sted") and token[:-2]:
+            tokens.add(token[:-2])
+        if token.endswith("coll"):
+            tokens.add("collection")
+        if "shine" in token or "shiny" in token:
+            tokens.add("shine")
+            tokens.add("shiny")
+        if "gojpn" in token or token == "go":
+            tokens.add("go")
+        if compact != token and "anniv" in compact:
+            tokens.add("anniversary")
+        for term in embedded_terms:
+            if term in token and term != token:
+                tokens.add(term)
+    return {token for token in tokens if token not in SLAB_TEXT_STOPWORDS}
+
+
+def title_similarity(lookup: dict[str, Any], record: dict[str, Any]) -> float:
+    lookup_tokens = text_tokens(
+        lookup.get("brand_title"),
+        lookup.get("set_title"),
+        lookup.get("variety"),
+        lookup.get("pedigree"),
+        lookup.get("description"),
+        lookup.get("title"),
+    )
+    record_tokens = text_tokens(
+        record.get("set_id"),
+        record.get("serebii_set_name"),
+        record.get("serebii_set_label"),
+        record.get("snkr_product_name"),
+        record.get("card_id"),
+    )
+    if not lookup_tokens or not record_tokens:
+        return 0.0
+    overlap = lookup_tokens & record_tokens
+    return len(overlap) / max(1, min(len(lookup_tokens), len(record_tokens)))
+
+
+def subject_similarity(lookup: dict[str, Any], record: dict[str, Any]) -> float:
+    lookup_compacts = [
+        normalize_lookup_key(lookup.get(key))
+        for key in ("subject", "name", "card_name", "description")
+        if normalize_lookup_key(lookup.get(key))
+    ]
+    record_compacts = [
+        normalize_lookup_key(record.get(key))
+        for key in ("name", "name_en", "name_ja", "pokemon_species")
+        if normalize_lookup_key(record.get(key))
+    ]
+    for lookup_compact in lookup_compacts:
+        for record_compact in record_compacts:
+            if len(lookup_compact) >= 3 and len(record_compact) >= 3 and (
+                lookup_compact in record_compact or record_compact in lookup_compact
+            ):
+                return 1.0
+    lookup_tokens = text_tokens(lookup.get("subject"), lookup.get("name"), lookup.get("card_name"))
+    record_tokens = text_tokens(
+        record.get("name"),
+        record.get("name_en"),
+        record.get("name_ja"),
+        record.get("pokemon_species"),
+        record.get("snkr_product_name"),
+    )
+    if not lookup_tokens or not record_tokens:
+        return 0.0
+    if lookup_tokens <= record_tokens:
+        return 1.0
+    return len(lookup_tokens & record_tokens) / max(1, len(lookup_tokens))
+
+
+def slab_record_lookup_score(record: dict[str, Any], lookup: dict[str, Any]) -> float:
+    snkr_product_id = lookup.get("snkr_product_id") or lookup.get("product_id")
+    if snkr_product_id and str(record.get("snkr_product_id") or "") == str(snkr_product_id):
+        return 1.0
+    for key in ("canonical_id", "card_id"):
+        if lookup.get(key) and str(record.get(key) or "") == str(lookup.get(key)):
+            return 0.99
+
+    lookup_set = normalize_set_for_match(lookup.get("set_id") or lookup.get("set"))
+    lookup_number = normalize_card_number(
+        lookup.get("card_code")
+        or lookup.get("card_number")
+        or lookup.get("number")
+        or lookup.get("cardNo")
+    )
+    record_number = normalize_card_number(record.get("card_code"))
+    if lookup_set and lookup_number:
+        if normalize_set_for_match(record.get("set_id")) == lookup_set and record_number == lookup_number:
+            return 0.96
+        return 0.0
+
+    if not lookup_number or lookup_number != record_number:
+        return 0.0
+
+    name_score = subject_similarity(lookup, record)
+    set_title_score = title_similarity(lookup, record)
+    is_label_ocr_lookup = lookup.get("provider") == "slab_label_ocr" or lookup.get("lookup_source") == "slab_label_ocr"
+    title_threshold = 0.12 if is_label_ocr_lookup else 0.35
+    if name_score >= 0.99 and set_title_score >= title_threshold:
+        return min(0.95, 0.82 + (set_title_score * 0.10))
+    if name_score >= 0.99 and not any(lookup.get(key) for key in ("brand_title", "set_title", "variety", "pedigree", "description", "title")):
+        return 0.72
+    if name_score >= 0.65 and set_title_score >= 0.55:
+        return min(0.90, 0.70 + (set_title_score * 0.15))
+    return 0.0
+
+
+def record_matches_slab_lookup(record: dict[str, Any], lookup: dict[str, Any]) -> bool:
+    return slab_record_lookup_score(record, lookup) > 0.0
+
+
+def slab_lookup_results(lookup: dict[str, Any], barcode: dict[str, Any], top_k: int) -> list[dict[str, Any]]:
+    matches: list[dict[str, Any]] = []
+    seen_keys: set[tuple[str, str]] = set()
+    for loaded in service.load_indexes():
+        for record in loaded.records:
+            match_score = slab_record_lookup_score(record, lookup)
+            if match_score <= 0.0:
+                continue
+            key = (str(record.get("canonical_id") or record.get("card_id") or ""), str(record.get("snkr_product_id") or ""))
+            seen_keys.add(key)
+            result = format_result(loaded.name, len(matches) + 1, match_score, record)
+            result["slab_barcode_match"] = True
+            result["slab_barcode_text"] = barcode.get("text")
+            result["slab_cert_key"] = barcode.get("cert_key")
+            result["slab_lookup_source"] = lookup.get("lookup_source") or str(SLAB_CERT_LOOKUP_PATH)
+            result["slab_lookup_provider"] = lookup.get("provider")
+            result["slab_lookup_match_score"] = round(match_score, 4)
+            if lookup.get("language"):
+                result["slab_lookup_language"] = lookup.get("language")
+            matches.append(result)
+    for source_name, record in load_slab_catalog_lookup_records():
+        match_score = slab_record_lookup_score(record, lookup)
+        if match_score <= 0.0:
+            continue
+        key = (str(record.get("canonical_id") or record.get("card_id") or ""), str(record.get("snkr_product_id") or ""))
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        result = format_result(source_name, len(matches) + 1, match_score, record)
+        result["slab_barcode_match"] = True
+        result["slab_barcode_text"] = barcode.get("text")
+        result["slab_cert_key"] = barcode.get("cert_key")
+        result["slab_lookup_source"] = lookup.get("lookup_source") or str(SLAB_CERT_LOOKUP_PATH)
+        result["slab_lookup_provider"] = lookup.get("provider")
+        result["slab_lookup_match_score"] = round(match_score, 4)
+        if lookup.get("language"):
+            result["slab_lookup_language"] = lookup.get("language")
+        result["slab_catalog_match"] = True
+        matches.append(result)
+    target_language = normalize_language(lookup.get("language"))
+
+    def sort_key(item: dict[str, Any]) -> tuple[float, int, int, int]:
+        language_match = 1 if target_language and candidate_language(item) == target_language else 0
+        snkr = item.get("snkr") or {}
+        has_snkr_product = 1 if snkr.get("product_id") or item.get("snkr_product_id") else 0
+        is_japanese_index = 1 if str(item.get("index") or "").endswith("_ja") else 0
+        return (
+            float(item.get("slab_lookup_match_score") or 0.0),
+            language_match,
+            has_snkr_product,
+            is_japanese_index,
+        )
+
+    matches.sort(key=sort_key, reverse=True)
+    for rank, item in enumerate(matches[:top_k], start=1):
+        item["rank"] = rank
+    return matches[:top_k]
+
+
+def load_slab_catalog_lookup_records() -> list[tuple[str, dict[str, Any]]]:
+    paths = [path if path.is_absolute() else ROOT / path for path in SLAB_CATALOG_LOOKUP_PATHS]
+    existing_paths = [path for path in paths if path.exists()]
+    try:
+        mtime_ns = tuple(path.stat().st_mtime_ns for path in existing_paths)
+    except OSError:
+        mtime_ns = ()
+    cache_paths = tuple(str(path) for path in existing_paths)
+    if SLAB_CATALOG_LOOKUP_CACHE.get("paths") == cache_paths and SLAB_CATALOG_LOOKUP_CACHE.get("mtime_ns") == mtime_ns:
+        return list(SLAB_CATALOG_LOOKUP_CACHE.get("records") or [])
+
+    records: list[tuple[str, dict[str, Any]]] = []
+    for path in existing_paths:
+        source_name = f"catalog:{path.stem}"
+        try:
+            for record in iter_jsonl(path):
+                if isinstance(record, dict):
+                    records.append((source_name, record))
+        except Exception:  # noqa: BLE001
+            continue
+    SLAB_CATALOG_LOOKUP_CACHE.update({"paths": cache_paths, "mtime_ns": mtime_ns, "records": records})
+    return records
+
+
+def http_get_json(url: str, headers: dict[str, str], timeout: float = SLAB_CERT_API_TIMEOUT) -> dict[str, Any]:
+    request = Request(url, headers=headers, method="GET")
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            raw = response.read()
+            text = raw.decode("utf-8", errors="replace")
+            try:
+                payload = json.loads(text) if text else None
+            except json.JSONDecodeError:
+                payload = None
+            return {
+                "status": "ok",
+                "http_status": int(getattr(response, "status", 200)),
+                "payload": payload,
+                "body_preview": text[:500] if payload is None else None,
+            }
+    except HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")[:500]
+        return {"status": "http_error", "http_status": exc.code, "body_preview": body}
+    except (TimeoutError, URLError, OSError) as exc:
+        return {"status": "network_error", "error": str(exc)}
+
+
+def normalize_provider_cert_payload(provider: str, cert_key: str, barcode: dict[str, Any], payload: Any) -> dict[str, Any]:
+    source = payload if isinstance(payload, dict) else {}
+    cert_number = deep_find_scalar(source, ["certNumber", "cert_number", "cert", "certificateNumber"]) or cert_key
+    card_number = deep_find_scalar(source, ["cardNumber", "card_number", "cardNo", "number"])
+    subject = deep_find_scalar(source, ["subject", "cardName", "card_name", "name"])
+    brand_title = deep_find_scalar(source, ["brandTitle", "brand/title", "brand", "title", "setName", "set_name"])
+    variety = deep_find_scalar(source, ["variety", "pedigree", "varietyPedigree", "variety/pedigree"])
+    description = deep_find_scalar(source, ["description", "itemDescription", "labelDescription"])
+    year = deep_find_scalar(source, ["year"])
+    grade = deep_find_scalar(source, ["gradeDescription", "displayGrade", "grade"])
+    category = deep_find_scalar(source, ["category"])
+    lookup: dict[str, Any] = {
+        "cert": str(cert_number),
+        "certificate_number": str(cert_number),
+        "provider": provider,
+        "lookup_source": f"{provider}_api",
+        "barcode_text": barcode.get("text"),
+        "barcode_format": barcode.get("format"),
+        "card_number": str(card_number) if card_number not in (None, "") else None,
+        "card_code": str(card_number) if card_number not in (None, "") else None,
+        "subject": str(subject) if subject not in (None, "") else None,
+        "name": str(subject) if subject not in (None, "") else None,
+        "brand_title": str(brand_title) if brand_title not in (None, "") else None,
+        "set_title": str(brand_title) if brand_title not in (None, "") else None,
+        "variety": str(variety) if variety not in (None, "") else None,
+        "description": str(description) if description not in (None, "") else None,
+        "year": str(year) if year not in (None, "") else None,
+        "grade": str(grade) if grade not in (None, "") else None,
+        "category": str(category) if category not in (None, "") else None,
+        "provider_payload": source,
+    }
+    if provider == "psa":
+        lookup["cert_url"] = f"https://www.psacard.com/cert/{cert_key}/psa"
+    return {key: value for key, value in lookup.items() if value not in (None, "")}
+
+
+def psa_lookup_cert(cert_key: str, barcode: dict[str, Any]) -> dict[str, Any]:
+    attempt: dict[str, Any] = {"provider": "psa", "cert_key": cert_key}
+    if not PSA_PUBLIC_API_TOKEN:
+        attempt["status"] = "not_configured"
+        attempt["reason"] = "CARD_SCAN_PSA_API_TOKEN is not set"
+        return attempt
+    if not re.fullmatch(r"\d{7,10}", cert_key or ""):
+        attempt["status"] = "skipped_cert_format"
+        return attempt
+    url = f"https://api.psacard.com/publicapi/cert/GetByCertNumber/{quote(cert_key)}"
+    response = http_get_json(
+        url,
+        {
+            "Accept": "application/json",
+            "Authorization": f"bearer {PSA_PUBLIC_API_TOKEN}",
+        },
+    )
+    attempt.update({key: value for key, value in response.items() if key != "payload"})
+    payload = response.get("payload")
+    if response.get("status") != "ok":
+        return attempt
+    if isinstance(payload, dict):
+        server_message = str(payload.get("ServerMessage") or payload.get("serverMessage") or "")
+        is_valid = payload.get("IsValidRequest", payload.get("isValidRequest", True))
+        if is_valid is False or "no data" in server_message.lower():
+            attempt["status"] = "not_found"
+            attempt["server_message"] = server_message
+            return attempt
+    attempt["status"] = "matched"
+    attempt["entry"] = normalize_provider_cert_payload("psa", cert_key, barcode, payload)
+    return attempt
+
+
+def cgc_lookup_cert(cert_key: str, barcode: dict[str, Any]) -> dict[str, Any]:
+    attempt: dict[str, Any] = {"provider": "cgc", "cert_key": cert_key}
+    if not CGC_DEALER_API_TOKEN:
+        attempt["status"] = "not_configured"
+        attempt["reason"] = "CARD_SCAN_CGC_DEALER_API_TOKEN is not set"
+        return attempt
+    headers = {
+        "Accept": "application/json",
+        "Authorization": f"Bearer {CGC_DEALER_API_TOKEN}",
+    }
+    urls = [
+        ("cert_v3", f"https://dealer-api.collectiblesgroup.com/cards/certifications/v3/lookup/{quote(cert_key)}"),
+        ("cert_v2", f"https://dealer-api.collectiblesgroup.com/cards/certifications/v2/lookup/{quote(cert_key)}"),
+    ]
+    barcode_text = str(barcode.get("text") or "").strip()
+    if barcode_text and barcode_text != cert_key:
+        encoded_barcode = quote(barcode_text, safe="")
+        urls.extend(
+            [
+                (
+                    "barcode_v3",
+                    f"https://dealer-api.collectiblesgroup.com/cards/certifications/v3/barcode/{encoded_barcode}",
+                ),
+                (
+                    "barcode_v2",
+                    f"https://dealer-api.collectiblesgroup.com/cards/certifications/v2/barcode/{encoded_barcode}",
+                ),
+            ]
+        )
+    responses: list[dict[str, Any]] = []
+    for lookup_kind, url in urls:
+        response = http_get_json(url, headers)
+        responses.append({key: value for key, value in {"lookup_kind": lookup_kind, **response}.items() if key != "payload"})
+        if response.get("status") == "ok" and response.get("payload"):
+            attempt["status"] = "matched"
+            attempt["lookup_kind"] = lookup_kind
+            attempt["responses"] = responses
+            attempt["entry"] = normalize_provider_cert_payload("cgc", cert_key, barcode, response.get("payload"))
+            return attempt
+    attempt["status"] = "not_found"
+    attempt["responses"] = responses
+    return attempt
+
+
+def slab_barcode_provider_hint(barcode: dict[str, Any]) -> str | None:
+    text = str(barcode.get("text") or "").lower()
+    if "psacard.com" in text:
+        return "psa"
+    if "cgccards.com" in text or "collectiblesgroup.com" in text:
+        return "cgc"
+    return None
+
+
+SLAB_LABEL_GRADE_TOKENS = {
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "AUTHENTIC",
+    "EX",
+    "EX-MT",
+    "FAIR",
+    "GEM",
+    "GEMMT",
+    "GEM MT",
+    "GOOD",
+    "MINT",
+    "MT",
+    "NM",
+    "NM-MT",
+    "PR",
+    "PSA",
+    "VG",
+}
+
+
+def slab_label_ocr_variants(image: Any) -> list[tuple[str, Any]]:
+    height, width = image.shape[:2]
+    top_label_bottom = 0.34 if height / max(1, width) > 1.18 else 0.24
+    boxes = [
+        ("top", (0.00, 0.00, 1.00, top_label_bottom)),
+        ("left_label", (0.015, 0.015, 0.50, 0.215)),
+    ]
+    variants: list[tuple[str, Any]] = []
+    for name, box in boxes:
+        crop = crop_ratio(image, box)
+        crop_height, crop_width = crop.shape[:2]
+        if crop_height < 24 or crop_width < 80:
+            continue
+        scale = max(1, min(5, int(round(1200 / max(1, crop_width)))))
+        if scale > 1:
+            crop = cv2.resize(crop, (crop_width * scale, crop_height * scale), interpolation=cv2.INTER_CUBIC)
+        variants.append((name, crop))
+    return variants
+
+
+def recognize_slab_label_text_with_rapidocr(image: Any) -> dict[str, Any]:
+    if not rapidocr_available():
+        return {"source": "rapidocr", "status": "unavailable", "reason": "rapidocr_onnxruntime is missing"}
+    started = time.perf_counter()
+    try:
+        engine = get_rapidocr_engine()
+    except Exception as exc:  # noqa: BLE001
+        return {"source": "rapidocr", "status": "unavailable", "reason": str(exc)}
+
+    variant_rows: list[dict[str, Any]] = []
+    texts: list[str] = []
+    max_confidence = 0.0
+    with tempfile.TemporaryDirectory() as temp:
+        temp_path = Path(temp)
+        for variant_name, variant_image in slab_label_ocr_variants(image):
+            path = temp_path / f"slab_label_{variant_name}.jpg"
+            cv2.imwrite(str(path), variant_image, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
+            try:
+                result = engine(str(path))
+            except Exception as exc:  # noqa: BLE001
+                variant_rows.append({"variant": variant_name, "status": "error", "error": str(exc)})
+                continue
+            text, confidence = flatten_rapidocr_result(result)
+            max_confidence = max(max_confidence, confidence)
+            if text:
+                texts.append(text)
+            variant_rows.append(
+                {
+                    "variant": variant_name,
+                    "status": "ok" if text else "empty",
+                    "text": text,
+                    "confidence": confidence,
+                    "width": int(variant_image.shape[1]),
+                    "height": int(variant_image.shape[0]),
+                }
+            )
+    text = "\n".join(texts)
+    return {
+        "source": "rapidocr",
+        "status": "ok" if text else "not_found",
+        "text": text,
+        "ocr_confidence": max_confidence,
+        "variants": variant_rows,
+        "seconds": time.perf_counter() - started,
+    }
+
+
+def normalize_slab_label_ocr_text(text: str) -> str:
+    normalized = normalize_ocr_text(text or "")
+    normalized = normalized.replace("POKEMONJAPANESE", "POKEMON JAPANESE")
+    normalized = normalized.replace("POKEMONENGLISH", "POKEMON ENGLISH")
+    normalized = normalized.replace("GEMMT", "GEM MT")
+    normalized = re.sub(r"(?<=\d)[OQ](?=\d)", "0", normalized)
+    normalized = re.sub(r"\b2OTH\b", "20TH", normalized)
+    normalized = re.sub(r"\b2OTHANNIV\b", "20THANNIV", normalized)
+    return normalized
+
+
+def normalize_slab_set_alias_key(value: str | None) -> str:
+    text = normalize_slab_label_ocr_text(value or "")
+    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+    text = text.upper().replace("&", "AND")
+    text = re.sub(r"[^A-Z0-9]+", "", text)
+    text = text.replace("2OTH", "20TH")
+    text = text.replace("CHAMPI0N", "CHAMPION")
+    return text
+
+
+def add_slab_label_set_alias(
+    aliases: dict[tuple[str, str], dict[str, Any]],
+    alias: str | None,
+    set_id: str | None,
+    source: str,
+    confidence: str,
+    notes: str = "",
+) -> None:
+    alias_key = normalize_slab_set_alias_key(alias)
+    normalized_set = normalize_set_for_match(set_id)
+    if not alias_key or len(alias_key) < 3 or not normalized_set:
+        return
+    key = (alias_key, normalized_set)
+    current = aliases.get(key)
+    row = {
+        "alias": alias,
+        "alias_key": alias_key,
+        "set_id": set_id,
+        "normalized_set_id": normalized_set,
+        "source": source,
+        "confidence": confidence,
+        "notes": notes,
+    }
+    if current is None or len(alias_key) > len(str(current.get("alias_key") or "")):
+        aliases[key] = row
+
+
+def load_slab_label_set_aliases() -> list[dict[str, Any]]:
+    paths = [SLAB_LABEL_SET_ALIASES_PATH, SEREBII_SET_NAME_MAP_PATH]
+    existing_paths = [path for path in paths if path.exists()]
+    cache_paths = tuple(str(path) for path in existing_paths)
+    try:
+        mtime_ns = tuple(path.stat().st_mtime_ns for path in existing_paths)
+    except OSError:
+        mtime_ns = ()
+    if (
+        SLAB_LABEL_SET_ALIAS_CACHE.get("paths") == cache_paths
+        and SLAB_LABEL_SET_ALIAS_CACHE.get("mtime_ns") == mtime_ns
+    ):
+        return list(SLAB_LABEL_SET_ALIAS_CACHE.get("rows") or [])
+
+    aliases: dict[tuple[str, str], dict[str, Any]] = {}
+    if SLAB_LABEL_SET_ALIASES_PATH.exists():
+        with SLAB_LABEL_SET_ALIASES_PATH.open(newline="", encoding="utf-8") as handle:
+            for row in csv.DictReader(handle):
+                if str(row.get("enabled") or "true").strip().lower() in {"0", "false", "no"}:
+                    continue
+                add_slab_label_set_alias(
+                    aliases,
+                    row.get("alias"),
+                    row.get("set_id"),
+                    row.get("source") or "slab_label_set_aliases",
+                    row.get("confidence") or "manual",
+                    row.get("notes") or "",
+                )
+
+    if SEREBII_SET_NAME_MAP_PATH.exists():
+        with SEREBII_SET_NAME_MAP_PATH.open(newline="", encoding="utf-8") as handle:
+            for row in csv.DictReader(handle):
+                set_id = row.get("mapped_set_id") or row.get("set_id")
+                confidence = row.get("confidence") or "serebii_map"
+                for alias in (
+                    row.get("serebii_set_name"),
+                    row.get("canonical_snkr_evidence_name"),
+                    row.get("evidence_source"),
+                ):
+                    add_slab_label_set_alias(aliases, alias, set_id, "serebii_set_name_map", confidence)
+
+    rows = sorted(
+        aliases.values(),
+        key=lambda item: (
+            len(str(item.get("alias_key") or "")),
+            1 if str(item.get("confidence") or "").lower() == "high" else 0,
+        ),
+        reverse=True,
+    )
+    SLAB_LABEL_SET_ALIAS_CACHE.update({"paths": cache_paths, "mtime_ns": mtime_ns, "rows": rows})
+    return list(rows)
+
+
+def match_slab_label_set_alias(normalized_text: str) -> dict[str, Any] | None:
+    text_key = normalize_slab_set_alias_key(normalized_text)
+    if not text_key:
+        return None
+    for row in load_slab_label_set_aliases():
+        alias_key = str(row.get("alias_key") or "")
+        if not alias_key or len(alias_key) < 3:
+            continue
+        if alias_key in text_key:
+            return {
+                "set_id": row.get("set_id"),
+                "normalized_set_id": row.get("normalized_set_id"),
+                "matched_alias": row.get("alias"),
+                "matched_alias_key": alias_key,
+                "source": row.get("source"),
+                "confidence": row.get("confidence"),
+                "notes": row.get("notes"),
+            }
+    return None
+
+
+def extract_slab_label_set_id(normalized_text: str) -> dict[str, Any] | None:
+    direct_patterns = [
+        r"\b(?:JPN|JP|JAPANESE)\.?\s*(?P<set>(?:SV|S|SM|XY|BW|DP|PCG|ADV)-?P)\b",
+        r"\b(?P<set>(?:SV|S|SM|XY|BW|DP|PCG|ADV)-?P)\s*(?:PROMO|PROMOS)\b",
+    ]
+    for pattern in direct_patterns:
+        match = re.search(pattern, normalized_text, flags=re.I)
+        if not match:
+            continue
+        raw_set = match.group("set")
+        normalized_set = normalize_set_for_match(raw_set)
+        if normalized_set:
+            return {
+                "set_id": normalized_set,
+                "normalized_set_id": normalized_set,
+                "matched_alias": raw_set,
+                "matched_alias_key": normalize_slab_set_alias_key(raw_set),
+                "source": "slab_label_direct_set_code",
+                "confidence": "high",
+                "notes": "Direct set code parsed from slab label OCR.",
+            }
+    return None
+
+
+def parse_slab_label_ocr_lookup(text: str, cert_key: str | None = None) -> dict[str, Any]:
+    normalized = normalize_slab_label_ocr_text(text)
+    set_alias_match = match_slab_label_set_alias(normalized) or extract_slab_label_set_id(normalized)
+    language_payload = infer_language_from_text(normalized, source="slab_label_ocr")
+    number_match = re.search(r"#\s*([A-Z]?\d{1,4})\b", normalized) or re.search(
+        r"\bNO\.?\s*([A-Z]?\d{1,4})\b",
+        normalized,
+    )
+    card_number = number_match.group(1) if number_match else None
+    stop_compact = {token.replace(" ", "") for token in SLAB_LABEL_GRADE_TOKENS}
+
+    lines: list[str] = []
+    for raw_line in normalized.splitlines():
+        line = re.sub(r"[^A-Z0-9# /.-]+", " ", raw_line).strip()
+        line = re.sub(r"\s+", " ", line)
+        compact = line.replace(" ", "")
+        if not line or compact in stop_compact:
+            continue
+        if re.fullmatch(r"\d{7,10}", compact):
+            continue
+        if re.fullmatch(r"#?[A-Z]?\d{1,4}", compact):
+            continue
+        lines.append(line)
+
+    subject: str | None = None
+    title_parts: list[str] = []
+    for line in lines:
+        clean = re.sub(r"^\d{4}\s*", "", line).strip()
+        clean = clean.replace("POKEMON JAPANESE", "").replace("POKEMON ENGLISH", "")
+        clean = clean.replace("POKEMON", "").replace("JAPANESE", "").replace("ENGLISH", "").strip()
+        if not clean:
+            title_parts.append(line)
+            continue
+        if subject is None and len(clean.split()) <= 4 and not re.search(
+            r"\b(?:ANNIV|CHAMPION|COLLECTION|DECK|EXPANSION|PACK|SERIES)\b",
+            clean,
+        ):
+            subject = clean
+        else:
+            title_parts.append(clean)
+
+    lookup: dict[str, Any] = {
+        "provider": "slab_label_ocr",
+        "lookup_source": "slab_label_ocr",
+        "set_id": set_alias_match.get("set_id") if set_alias_match else None,
+        "card_number": card_number,
+        "card_code": card_number,
+        "subject": subject,
+        "name": subject,
+        "brand_title": " ".join(title_parts),
+        "set_title": " ".join(title_parts),
+        "description": normalized,
+    }
+    if language_payload.get("status") == "ok":
+        lookup["language"] = language_payload.get("language")
+        lookup["language_source"] = language_payload.get("source")
+        lookup["language_signals"] = language_payload.get("signals")
+    if set_alias_match:
+        lookup["set_alias_match"] = set_alias_match
+    if cert_key:
+        lookup["cert"] = cert_key
+        lookup["certificate_number"] = cert_key
+    return {key: value for key, value in lookup.items() if value not in (None, "")}
+
+
+def recognize_slab_label_ocr(image: Any, barcode: dict[str, Any] | None, top_k: int) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    payload = {
+        "enabled": DEFAULT_SLAB_LABEL_OCR,
+        "engine": DEFAULT_SLAB_LABEL_OCR_ENGINE,
+        "status": "skipped" if not DEFAULT_SLAB_LABEL_OCR else "not_found",
+    }
+    if not DEFAULT_SLAB_LABEL_OCR:
+        return payload, []
+    if DEFAULT_SLAB_LABEL_OCR_ENGINE not in {"rapidocr", "rapid"}:
+        payload["status"] = "unsupported"
+        payload["reason"] = f"Unsupported slab label OCR engine: {DEFAULT_SLAB_LABEL_OCR_ENGINE}"
+        return payload, []
+
+    text_payload = recognize_slab_label_text_with_rapidocr(image)
+    payload.update(text_payload)
+    if text_payload.get("status") != "ok":
+        return payload, []
+    cert_key = str((barcode or {}).get("cert_key") or "") or None
+    lookup = parse_slab_label_ocr_lookup(str(text_payload.get("text") or ""), cert_key=cert_key)
+    payload["lookup_entry"] = lookup
+    required_keys = {
+        "set_id": bool(lookup.get("set_id")),
+        "card_number": bool(lookup.get("card_number") or lookup.get("card_code")),
+    }
+    payload["direct_lookup_required_keys"] = required_keys
+    if not all(required_keys.values()):
+        payload["matched_result_count"] = 0
+        payload["status"] = "insufficient_lookup_keys"
+        payload["reason"] = "slab label OCR direct lookup requires both set_id and card_number"
+        return payload, []
+
+    results = slab_lookup_results(lookup, barcode or {}, top_k)
+    payload["matched_result_count"] = len(results)
+    payload["status"] = "matched" if results else "lookup_without_index_match"
+    return payload, results
+
+
+def external_slab_lookup(barcode: dict[str, Any], top_k: int) -> tuple[dict[str, Any] | None, list[dict[str, Any]], list[dict[str, Any]]]:
+    cert_key = str(barcode.get("cert_key") or "")
+    if not cert_key:
+        return None, [], []
+    if not SLAB_CERT_API_LOOKUP_ENABLED:
+        return None, [], [
+            {
+                "status": "disabled",
+                "reason": "CARD_SCAN_SLAB_CERT_API_LOOKUP is disabled; slab label OCR/catalog lookup is preferred",
+                "cert_key": cert_key,
+            }
+        ]
+    providers: list[str] = []
+    hint = slab_barcode_provider_hint(barcode)
+    if hint:
+        providers.append(hint)
+    providers.extend(SLAB_CERT_LOOKUP_PROVIDERS)
+    ordered_providers = list(dict.fromkeys(providers))
+    attempts: list[dict[str, Any]] = []
+    for provider in ordered_providers:
+        if provider == "psa":
+            attempt = psa_lookup_cert(cert_key, barcode)
+        elif provider in {"cgc", "ccg"}:
+            attempt = cgc_lookup_cert(cert_key, barcode)
+        else:
+            attempt = {"provider": provider, "status": "unsupported"}
+        attempts.append(attempt)
+        entry = attempt.get("entry")
+        if isinstance(entry, dict):
+            results = slab_lookup_results(entry, barcode, top_k)
+            return entry, results, attempts
+    return None, [], attempts
+
+
+def recognize_slab_barcode(image: Any, top_k: int, scan_always: bool = DEFAULT_SLAB_BARCODE_SCAN_ALWAYS) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    label = psa_label_score(image)
+    payload: dict[str, Any] = {
+        "enabled": True,
+        "zxing_available": zxing_available(),
+        "lookup_path": SLAB_CERT_LOOKUP_PATH or None,
+        "lookup_providers": SLAB_CERT_LOOKUP_PROVIDERS,
+        "provider_tokens_configured": {
+            "psa": bool(PSA_PUBLIC_API_TOKEN),
+            "cgc": bool(CGC_DEALER_API_TOKEN),
+        },
+        "barcode_lookup_enabled": False,
+        "label_ocr_enabled": DEFAULT_SLAB_LABEL_OCR,
+        "label_ocr_engine": DEFAULT_SLAB_LABEL_OCR_ENGINE if DEFAULT_SLAB_LABEL_OCR else None,
+        "scan_always": scan_always,
+        "psa_label": label,
+        "barcodes": [],
+        "cert_candidates": [],
+        "lookup": {"status": "label_ocr_not_found"},
+    }
+    if not zxing_available():
+        payload["zxing_available"] = False
+    if not scan_always and not label.get("is_slab_label_region"):
+        payload["status"] = "skipped_non_slab"
+        return payload, []
+
+    label_ocr_payload: dict[str, Any] = {"enabled": DEFAULT_SLAB_LABEL_OCR, "status": "skipped"}
+    label_ocr_results: list[dict[str, Any]] = []
+    if DEFAULT_SLAB_LABEL_OCR:
+        label_ocr_payload, label_ocr_results = recognize_slab_label_ocr(image, {}, top_k)
+        payload["lookup"]["label_ocr"] = label_ocr_payload
+        if label_ocr_results:
+            payload["status"] = "lookup_match"
+            payload["lookup"] = {
+                "status": "label_ocr_matched",
+                "source": "label_ocr",
+                "entry": label_ocr_payload.get("lookup_entry"),
+                "matched_result_count": len(label_ocr_results),
+                "label_ocr": label_ocr_payload,
+            }
+            return payload, label_ocr_results
+
+    payload["status"] = "not_found"
+    payload["reason"] = "slab label OCR did not resolve a catalog match; barcode/cert lookup is disabled"
+    payload["lookup"] = {
+        "status": "label_ocr_not_found",
+        "source": "label_ocr",
+        "label_ocr": label_ocr_payload,
+    }
+    return payload, []
+
+
+def slab_label_ocr_text_from_payload(payload: dict[str, Any]) -> str:
+    lookup = payload.get("lookup") or {}
+    label_ocr = lookup.get("label_ocr") or {}
+    text = str(label_ocr.get("text") or "").strip()
+    if text:
+        return text
+    entry = label_ocr.get("lookup_entry") or lookup.get("entry") or {}
+    return str(entry.get("description") or entry.get("brand_title") or "").strip()
+
+
+def infer_language_from_request_or_slab(
+    language_hint: str,
+    hint_text: str,
+    slab_text: str,
+    *,
+    enabled: bool,
+    boost: float,
+    ocr_enabled: bool,
+    ocr_engine: str,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "enabled": enabled,
+        "status": "skipped",
+        "boost": 0.0,
+        "ocr_enabled": ocr_enabled,
+        "ocr_engine": ocr_engine if ocr_enabled else None,
+    }
+    if not enabled:
+        return payload
+
+    explicit_language = normalize_language(language_hint)
+    if explicit_language:
+        return {
+            "enabled": True,
+            "status": "ok",
+            "source": "explicit",
+            "language": explicit_language,
+            "confidence": 1.0,
+            "signals": [f"explicit:{explicit_language}"],
+            "boost": boost,
+            "ocr_enabled": ocr_enabled,
+            "ocr_engine": ocr_engine if ocr_enabled else None,
+        }
+
+    source_text = hint_text.strip()
+    source = "hint_text"
+    if not source_text and slab_text.strip():
+        source_text = slab_text.strip()
+        source = "slab_label_ocr"
+
+    payload = infer_language_from_text(source_text, source=source)
+    payload["enabled"] = True
+    payload["boost"] = boost
+    payload["ocr_enabled"] = ocr_enabled
+    payload["ocr_engine"] = ocr_engine if ocr_enabled else None
+    return payload
+
+
+def rembg_available() -> bool:
+    return bool(importlib.util.find_spec("rembg") and importlib.util.find_spec("PIL"))
+
+
+def get_rembg_session(model_name: str = "u2netp") -> Any:
+    cache_key = f"rembg:{model_name}"
+    if cache_key not in SEGMENTATION_ENGINE_CACHE:
+        from rembg import new_session
+
+        SEGMENTATION_ENGINE_CACHE[cache_key] = new_session(model_name)
+    return SEGMENTATION_ENGINE_CACHE[cache_key]
+
+
+def u2netp_foreground_crop(image: Any, target_aspect: float) -> dict[str, Any]:
+    if not rembg_available():
+        return {
+            "status": "unavailable",
+            "reason": "rembg is not installed",
+            "fallback_used": False,
+            "detections": [],
+        }
+    from PIL import Image
+    from rembg import remove
+
+    height, width = image.shape[:2]
+    rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    pil_image = Image.fromarray(rgb)
+    mask = remove(pil_image, session=get_rembg_session("u2netp"), only_mask=True)
+    mask_array = np.asarray(mask)
+    ys, xs = np.where(mask_array > 24)
+    if len(xs) == 0 or len(ys) == 0:
+        return {
+            "status": "no_detection",
+            "fallback_used": False,
+            "detections": [],
+            "segmentation_model": "u2netp",
+        }
+
+    mask_box = (int(xs.min()), int(ys.min()), int(xs.max() + 1), int(ys.max() + 1))
+    box = expand_box_ratio(mask_box, width, height, 0.018)
+    box = trim_box_to_aspect(box, width, height, target_aspect)
+    x1, y1, x2, y2 = box
+    crop_image = image[y1:y2, x1:x2]
+    crop_height, crop_width = crop_image.shape[:2]
+    return {
+        "status": "u2netp_foreground",
+        "fallback_used": False,
+        "detections": [],
+        "segmentation_model": "u2netp",
+        "mask_threshold": 24,
+        "crop_width": crop_width,
+        "crop_height": crop_height,
+        "mask_box_ratio": {
+            "left": mask_box[0] / width,
+            "top": mask_box[1] / height,
+            "right": mask_box[2] / width,
+            "bottom": mask_box[3] / height,
+        },
+        "crop_box_ratio": {
+            "left": x1 / width,
+            "top": y1 / height,
+            "right": x2 / width,
+            "bottom": y2 / height,
+        },
+        "crop_area_ratio": ((x2 - x1) * (y2 - y1)) / max(1, width * height),
+        "crop_image": crop_image,
     }
 
 
@@ -955,7 +2895,7 @@ def contour_slab_inner_card_box(image: Any, target_aspect: float) -> tuple[tuple
 def slab_inner_card_crop(image: Any, target_aspect: float) -> dict[str, Any] | None:
     height, width = image.shape[:2]
     label = psa_label_score(image)
-    if not label.get("is_psa_label"):
+    if not (label.get("is_psa_label") or label.get("is_slab_label_region")):
         return None
 
     box, details = contour_slab_inner_card_box(image, target_aspect)
@@ -1518,6 +3458,31 @@ def health() -> dict[str, Any]:
         "default_card_code_ocr": DEFAULT_CARD_CODE_OCR,
         "card_code_ocr_script_exists": (ROOT / "scripts/quality/ocr_vision_text.swift").exists(),
         "card_code_ocr_exact_boost": DEFAULT_CARD_CODE_OCR_EXACT_BOOST,
+        "default_language_rerank": DEFAULT_LANGUAGE_RERANK,
+        "default_language_rerank_boost": DEFAULT_LANGUAGE_RERANK_BOOST,
+        "default_language_rerank_candidates": DEFAULT_LANGUAGE_RERANK_CANDIDATES,
+        "default_language_ocr": DEFAULT_LANGUAGE_OCR,
+        "default_language_ocr_engine": DEFAULT_LANGUAGE_OCR_ENGINE,
+        "rapidocr_available": rapidocr_available(),
+        "default_slab_barcode_lookup": DEFAULT_SLAB_BARCODE_LOOKUP,
+        "default_slab_barcode_scan_always": DEFAULT_SLAB_BARCODE_SCAN_ALWAYS,
+        "default_slab_label_ocr": DEFAULT_SLAB_LABEL_OCR,
+        "default_slab_label_ocr_engine": DEFAULT_SLAB_LABEL_OCR_ENGINE,
+        "zxing_available": zxing_available(),
+        "rembg_available": rembg_available(),
+        "slab_cert_lookup_path": SLAB_CERT_LOOKUP_PATH or None,
+        "slab_cert_lookup_configured": bool(SLAB_CERT_LOOKUP_PATH),
+        "slab_cert_lookup_providers": SLAB_CERT_LOOKUP_PROVIDERS,
+        "slab_label_set_aliases_path": str(SLAB_LABEL_SET_ALIASES_PATH),
+        "slab_label_set_alias_count": len(load_slab_label_set_aliases()),
+        "slab_catalog_lookup_paths": [str(path) for path in SLAB_CATALOG_LOOKUP_PATHS],
+        "slab_cert_api_timeout": SLAB_CERT_API_TIMEOUT,
+        "slab_cert_api_lookup_enabled": SLAB_CERT_API_LOOKUP_ENABLED,
+        "slab_cert_provider_tokens_configured": {
+            "psa": bool(PSA_PUBLIC_API_TOKEN),
+            "cgc": bool(CGC_DEALER_API_TOKEN),
+        },
+        "default_hint_card_code_boost": DEFAULT_HINT_CARD_CODE_BOOST,
         "indexes_loaded": service.indexes is not None,
         "configured_indexes": {name: str(path) for name, path in configured.items()},
         "available_indexes": {
@@ -1541,6 +3506,12 @@ def health() -> dict[str, Any]:
             {"source": str(source), "target": str(target)}
             for source, target in LOCAL_PATH_REWRITES
         ],
+        "snkr_mapping_flags": {
+            "path": str(SNKR_MAPPING_FLAGS_PATH),
+            "exists": SNKR_MAPPING_FLAGS_PATH.exists(),
+            "records": len(SNKR_MAPPING_FLAGS),
+            "suppress_flagged_mappings": SUPPRESS_FLAGGED_SNKR_MAPPINGS,
+        },
         "device": service.device or DEFAULT_DEVICE or "auto",
         "siglip_device": service.siglip_device or DEFAULT_DEVICE or "auto",
     }
@@ -1576,6 +3547,16 @@ async def recognize(
     rerank_model: str = DEFAULT_RERANK_MODEL,
     card_code_ocr: bool = DEFAULT_CARD_CODE_OCR,
     card_code_ocr_boost: float = DEFAULT_CARD_CODE_OCR_EXACT_BOOST,
+    language_rerank: bool = DEFAULT_LANGUAGE_RERANK,
+    language_rerank_boost: float = DEFAULT_LANGUAGE_RERANK_BOOST,
+    language_rerank_candidates: int = DEFAULT_LANGUAGE_RERANK_CANDIDATES,
+    language_hint: str = "",
+    language_hint_text: str = "",
+    language_ocr: bool = DEFAULT_LANGUAGE_OCR,
+    language_ocr_engine: str = DEFAULT_LANGUAGE_OCR_ENGINE,
+    slab_barcode_lookup: bool = DEFAULT_SLAB_BARCODE_LOOKUP,
+    hint_card_code: bool = True,
+    hint_card_code_boost: float = DEFAULT_HINT_CARD_CODE_BOOST,
     confidence: float = DEFAULT_CONFIDENCE,
     imgsz: int = DEFAULT_IMGSZ,
     padding: float = DEFAULT_PADDING,
@@ -1594,46 +3575,120 @@ async def recognize(
         "fallback_used": False,
         "detections": [],
     }
+    slab_barcode_payload: dict[str, Any] = {
+        "enabled": slab_barcode_lookup,
+        "status": "skipped",
+    }
     query_image = image
     debug_crop_image = None
     normalized_crop_mode = crop_mode.strip().lower().replace("-", "_")
     if not crop:
         normalized_crop_mode = "none"
 
+    if slab_barcode_lookup:
+        slab_barcode_start = time.perf_counter()
+        slab_barcode_payload, slab_barcode_results = recognize_slab_barcode(image, top_k=top_k)
+        timings["slab_barcode_seconds"] = time.perf_counter() - slab_barcode_start
+        if slab_barcode_results:
+            for rank, item in enumerate(slab_barcode_results, start=1):
+                item["rank"] = rank
+            slab_language_payload = infer_language_from_request_or_slab(
+                language_hint,
+                language_hint_text,
+                slab_label_ocr_text_from_payload(slab_barcode_payload),
+                enabled=language_rerank,
+                boost=max(0.0, language_rerank_boost),
+                ocr_enabled=False,
+                ocr_engine=language_ocr_engine,
+            )
+            lookup_source = str((slab_barcode_payload.get("lookup") or {}).get("source") or "")
+            recognition_route = "slab_label_ocr_lookup" if lookup_source == "label_ocr" else "slab_barcode_lookup"
+            timings["total_seconds"] = time.perf_counter() - total_start
+            return {
+                "status": "ok",
+                "recognition_route": recognition_route,
+                "started_at": started_at,
+                "input": {
+                    "filename": file.filename,
+                    "width": input_width,
+                    "height": input_height,
+                },
+                "crop": crop_payload,
+                "slab_barcode": slab_barcode_payload,
+                "results": slab_barcode_results[:top_k],
+                "results_by_index": {},
+                "candidate_selection": build_candidate_selection(slab_barcode_results),
+                "visual_rerank": {
+                    "enabled": False,
+                    "model": None,
+                    "weight": 0.0,
+                    "candidates": 0,
+                },
+                "card_code_ocr": {
+                    "enabled": False,
+                    "status": "skipped",
+                    "boost": 0.0,
+                },
+                "language_rerank": {
+                    **slab_language_payload,
+                    "direct_lookup_only": True,
+                },
+                "timings": timings,
+            }
+
     if normalized_crop_mode == "auto":
         crop_start = time.perf_counter()
         crop_payload = slab_inner_card_crop(image, target_aspect)
         if crop_payload is None:
-            crop_payload = contour_card_crop(
-                image=image,
-                padding=padding,
-                target_aspect=target_aspect,
-                aspect_tolerance=aspect_tolerance,
+            slab_barcode_status = slab_barcode_payload.get("status")
+            slab_label = slab_barcode_payload.get("psa_label") or {}
+            slab_signal = slab_barcode_status == "decoded" or bool(
+                slab_label.get("is_psa_label") or slab_label.get("is_slab_label_region")
             )
-            if contour_crop_looks_like_graded_slab_miss(crop_payload):
-                graded_slab_payload = generic_graded_slab_crop(image)
-                if graded_slab_payload is not None:
-                    graded_slab_payload["replaced_crop"] = crop_payload.get("status")
-                    graded_slab_payload["replaced_crop_details"] = crop_payload.get("contour_details")
-                    crop_payload = graded_slab_payload
-            if crop_payload is None:
-                crop_payload = service.crop(
+            if slab_signal:
+                crop_payload = generic_graded_slab_crop(image)
+                if crop_payload is not None:
+                    crop_payload["source_signal"] = "slab_barcode_or_label"
+            else:
+                crop_payload = u2netp_foreground_crop(image=image, target_aspect=target_aspect)
+
+            if crop_payload is None or crop_payload.get("status") not in {
+                "graded_slab_ratio_card",
+                "u2netp_foreground",
+            }:
+                previous_crop_payload = crop_payload
+                crop_payload = contour_card_crop(
                     image=image,
-                    confidence=confidence,
-                    imgsz=imgsz,
                     padding=padding,
                     target_aspect=target_aspect,
                     aspect_tolerance=aspect_tolerance,
                 )
-                if yolo_crop_looks_like_label_detection(crop_payload, input_height):
+                if previous_crop_payload is not None and crop_payload is not None:
+                    crop_payload["previous_crop_attempt"] = previous_crop_payload.get("status")
+                if contour_crop_looks_like_graded_slab_miss(crop_payload):
                     graded_slab_payload = generic_graded_slab_crop(image)
                     if graded_slab_payload is not None:
                         graded_slab_payload["replaced_crop"] = crop_payload.get("status")
-                        graded_slab_payload["replaced_crop_details"] = crop_payload.get("selected_detection")
+                        graded_slab_payload["replaced_crop_details"] = crop_payload.get("contour_details")
                         crop_payload = graded_slab_payload
+                if crop_payload is None:
+                    crop_payload = service.crop(
+                        image=image,
+                        confidence=confidence,
+                        imgsz=imgsz,
+                        padding=padding,
+                        target_aspect=target_aspect,
+                        aspect_tolerance=aspect_tolerance,
+                    )
+                    if yolo_crop_looks_like_label_detection(crop_payload, input_height):
+                        graded_slab_payload = generic_graded_slab_crop(image)
+                        if graded_slab_payload is not None:
+                            graded_slab_payload["replaced_crop"] = crop_payload.get("status")
+                            graded_slab_payload["replaced_crop_details"] = crop_payload.get("selected_detection")
+                            crop_payload = graded_slab_payload
         timings["crop_seconds"] = time.perf_counter() - crop_start
         debug_crop_image = crop_payload.get("crop_image")
-        if crop_payload["status"] in {"cropped", "slab_inner_card", "contour_card", "graded_slab_ratio_card"}:
+        if crop_payload["status"] in {"cropped", "slab_inner_card", "contour_card", "graded_slab_ratio_card", "u2netp_foreground"}:
             query_image = debug_crop_image
         elif fallback_to_original:
             crop_payload["fallback_used"] = True
@@ -1650,6 +3705,104 @@ async def recognize(
                     "height": input_height,
                 },
                 "crop": crop_payload,
+                "slab_barcode": slab_barcode_payload,
+                "results": [],
+                "results_by_index": {},
+                "timings": timings,
+            }
+    elif normalized_crop_mode in {"contour", "contour_card"}:
+        crop_start = time.perf_counter()
+        crop_payload = contour_card_crop(
+            image=image,
+            padding=padding,
+            target_aspect=target_aspect,
+            aspect_tolerance=aspect_tolerance,
+        ) or {
+            "status": "no_detection",
+            "detections": [],
+            "fallback_used": False,
+        }
+        timings["crop_seconds"] = time.perf_counter() - crop_start
+        debug_crop_image = crop_payload.get("crop_image")
+        if crop_payload["status"] == "contour_card":
+            query_image = debug_crop_image
+        elif fallback_to_original:
+            crop_payload["fallback_used"] = True
+            query_image = image
+        else:
+            crop_payload.pop("crop_image", None)
+            timings["total_seconds"] = time.perf_counter() - total_start
+            return {
+                "status": "no_detection",
+                "started_at": started_at,
+                "input": {
+                    "filename": file.filename,
+                    "width": input_width,
+                    "height": input_height,
+                },
+                "crop": crop_payload,
+                "slab_barcode": slab_barcode_payload,
+                "results": [],
+                "results_by_index": {},
+                "timings": timings,
+            }
+    elif normalized_crop_mode in {"yolo", "model", "detector"}:
+        crop_start = time.perf_counter()
+        crop_payload = service.crop(
+            image=image,
+            confidence=confidence,
+            imgsz=imgsz,
+            padding=padding,
+            target_aspect=target_aspect,
+            aspect_tolerance=aspect_tolerance,
+        )
+        timings["crop_seconds"] = time.perf_counter() - crop_start
+        debug_crop_image = crop_payload.get("crop_image")
+        if crop_payload["status"] == "cropped":
+            query_image = debug_crop_image
+        elif fallback_to_original:
+            crop_payload["fallback_used"] = True
+            query_image = image
+        else:
+            crop_payload.pop("crop_image", None)
+            timings["total_seconds"] = time.perf_counter() - total_start
+            return {
+                "status": "no_detection",
+                "started_at": started_at,
+                "input": {
+                    "filename": file.filename,
+                    "width": input_width,
+                    "height": input_height,
+                },
+                "crop": crop_payload,
+                "slab_barcode": slab_barcode_payload,
+                "results": [],
+                "results_by_index": {},
+                "timings": timings,
+            }
+    elif normalized_crop_mode in {"u2netp", "u2netp_foreground", "segmentation"}:
+        crop_start = time.perf_counter()
+        crop_payload = u2netp_foreground_crop(image=image, target_aspect=target_aspect)
+        timings["crop_seconds"] = time.perf_counter() - crop_start
+        debug_crop_image = crop_payload.get("crop_image")
+        if crop_payload["status"] == "u2netp_foreground":
+            query_image = debug_crop_image
+        elif fallback_to_original:
+            crop_payload["fallback_used"] = True
+            query_image = image
+        else:
+            crop_payload.pop("crop_image", None)
+            timings["total_seconds"] = time.perf_counter() - total_start
+            return {
+                "status": "no_detection",
+                "started_at": started_at,
+                "input": {
+                    "filename": file.filename,
+                    "width": input_width,
+                    "height": input_height,
+                },
+                "crop": crop_payload,
+                "slab_barcode": slab_barcode_payload,
                 "results": [],
                 "results_by_index": {},
                 "timings": timings,
@@ -1682,10 +3835,66 @@ async def recognize(
     timings["embedding_seconds"] = time.perf_counter() - encode_start
 
     search_start = time.perf_counter()
-    search_top_k = max(top_k, visual_rerank_candidates) if (visual_rerank or card_code_ocr) else top_k
-    search_per_index_top_k = max(per_index_top_k, search_top_k) if (visual_rerank or card_code_ocr) else per_index_top_k
+    candidate_windows = [top_k]
+    if visual_rerank or card_code_ocr:
+        candidate_windows.append(visual_rerank_candidates)
+    if language_rerank or hint_card_code:
+        candidate_windows.append(language_rerank_candidates)
+    search_top_k = max(candidate_windows)
+    search_per_index_top_k = max(per_index_top_k, search_top_k)
     combined, per_index = service.search(query, per_index_top_k=search_per_index_top_k, combined_top_k=search_top_k)
     timings["search_seconds"] = time.perf_counter() - search_start
+
+    slab_hint_text = slab_label_ocr_text_from_payload(slab_barcode_payload)
+    hint_text = language_hint_text.strip() or slab_hint_text
+    hint_text_source = "request" if language_hint_text.strip() else ("slab_label_ocr" if slab_hint_text else "empty")
+    hint_card_code_payload: dict[str, Any] = {
+        "enabled": hint_card_code,
+        "status": "skipped",
+        "boost": 0.0,
+    }
+    if hint_card_code and hint_text:
+        hint_card_code_payload = build_hint_card_code_payload(hint_text)
+        hint_card_code_payload["boost"] = max(0.0, hint_card_code_boost)
+        hint_card_code_payload["source"] = hint_text_source
+        combined = apply_card_code_ocr_boost(
+            combined,
+            hint_card_code_payload,
+            boost=max(0.0, hint_card_code_boost),
+            field_prefix="hint_card_code",
+        )
+
+    language_payload: dict[str, Any] = {
+        "enabled": language_rerank,
+        "status": "skipped",
+        "boost": 0.0,
+        "ocr_enabled": language_ocr,
+        "ocr_engine": language_ocr_engine if language_ocr else None,
+    }
+    if language_rerank:
+        language_start = time.perf_counter()
+        language_payload = infer_language_from_request_or_slab(
+            language_hint,
+            language_hint_text,
+            slab_hint_text,
+            enabled=True,
+            boost=max(0.0, language_rerank_boost),
+            ocr_enabled=language_ocr,
+            ocr_engine=language_ocr_engine,
+        )
+        if language_payload.get("status") != "ok" and language_ocr:
+            ocr_language_payload = recognize_language_with_ocr(query_image, language_ocr_engine)
+            ocr_language_payload["enabled"] = True
+            ocr_language_payload["boost"] = max(0.0, language_rerank_boost)
+            language_payload = ocr_language_payload
+        combined = apply_language_rerank(
+            combined,
+            language_payload,
+            boost=max(0.0, language_rerank_boost),
+        )
+        language_payload.setdefault("ocr_enabled", language_ocr)
+        language_payload.setdefault("ocr_engine", language_ocr_engine if language_ocr else None)
+        timings["language_rerank_seconds"] = time.perf_counter() - language_start
 
     if visual_rerank:
         rerank_start = time.perf_counter()
@@ -1717,7 +3926,7 @@ async def recognize(
     if card_code_ocr:
         ocr_start = time.perf_counter()
         crop_status = crop_payload.get("status")
-        if crop_status in {"cropped", "fixed_inner_card", "slab_inner_card", "contour_card", "graded_slab_ratio_card"}:
+        if crop_status in {"cropped", "fixed_inner_card", "slab_inner_card", "contour_card", "graded_slab_ratio_card", "u2netp_foreground"}:
             ocr_payload = recognize_card_bottom_code(query_image)
             ocr_payload["enabled"] = True
             ocr_payload["boost"] = card_code_ocr_boost
@@ -1735,9 +3944,10 @@ async def recognize(
             }
         timings["ocr_seconds"] = time.perf_counter() - ocr_start
 
-    combined = combined[:top_k]
     for rank, item in enumerate(combined, start=1):
         item["rank"] = rank
+    candidate_selection = build_candidate_selection(combined)
+    combined = combined[:top_k]
 
     timings["total_seconds"] = time.perf_counter() - total_start
 
@@ -1754,14 +3964,18 @@ async def recognize(
             "height": input_height,
         },
         "crop": crop_payload,
+        "slab_barcode": slab_barcode_payload,
         "results": combined,
         "results_by_index": per_index,
+        "candidate_selection": candidate_selection,
         "visual_rerank": {
             "enabled": visual_rerank,
             "model": rerank_model if visual_rerank else None,
             "candidates": search_top_k if visual_rerank else 0,
             "weight": visual_rerank_weight if visual_rerank else 0,
         },
+        "language_rerank": language_payload,
+        "hint_card_code": hint_card_code_payload,
         "card_code_ocr": ocr_payload,
         "timings": timings,
     }

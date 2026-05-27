@@ -10,7 +10,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     YOLO_CONFIG_DIR=/tmp/Ultralytics \
     CARD_SCAN_DEVICE=cpu \
     CARD_SCAN_PRELOAD=false \
-    CARD_SCAN_INDEXES="pokemon_en=data/processed/image_index,pokemon_ja=data/processed/pokemon_ja_canonical_image_index"
+    CARD_SCAN_INDEXES="pokemon_en=data/processed/image_index_base,pokemon_ja=data/processed/pokemon_ja_canonical_image_index_base,onepiece=data/processed/onepiece_image_index_base"
 
 WORKDIR /app
 
@@ -32,12 +32,13 @@ COPY requirements-deploy.txt ./
 RUN python -m pip install --upgrade pip && \
     python -m pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision && \
     python -m pip install -r requirements-deploy.txt && \
-    python -c "import cv2, faiss, fastapi, timm; from ultralytics import YOLO; print('runtime imports ok')"
+    python -c "import cv2, faiss, fastapi, rapidocr_onnxruntime, rembg, timm, zxingcpp; from ultralytics import YOLO; print('runtime imports ok')"
 
 COPY web ./web
 COPY scripts ./scripts
-COPY data/processed/image_index ./data/processed/image_index
-COPY data/processed/pokemon_ja_canonical_image_index ./data/processed/pokemon_ja_canonical_image_index
+COPY data/processed/image_index_base ./data/processed/image_index_base
+COPY data/processed/pokemon_ja_canonical_image_index_base ./data/processed/pokemon_ja_canonical_image_index_base
+COPY data/processed/onepiece_image_index_base ./data/processed/onepiece_image_index_base
 COPY data/processed/pokemon_ja_canonical_catalog.jsonl ./data/processed/pokemon_ja_canonical_catalog.jsonl
 COPY data/processed/pokemon_ja_canonical_summary.json ./data/processed/pokemon_ja_canonical_summary.json
 COPY data/processed/pokemon_ja_canonical_image_manifest.jsonl ./data/processed/pokemon_ja_canonical_image_manifest.jsonl

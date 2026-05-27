@@ -1,0 +1,23 @@
+{
+  "allow_sample": false,
+  "allow_watermarked": false,
+  "backend": "timm",
+  "completed_at": "2026-05-26T14:04:56+00:00",
+  "device": "cuda",
+  "embedding_dim": 768,
+  "excluded_before_limit": {
+    "missing_local_image_path": 0,
+    "sample": 0,
+    "watermarked": 0
+  },
+  "image_manifest": "data/manifests/pokemon_clean_images.jsonl",
+  "model": "vit_base_patch14_dinov2",
+  "outputs": {
+    "embeddings": "data/processed/image_index_base/image_embeddings.npy",
+    "faiss_index": "data/processed/image_index_base/faiss.index",
+    "manifest": "data/processed/image_index_base/image_embedding_manifest.jsonl"
+  },
+  "pretrained": "laion2b_s34b_b79k",
+  "records_indexed": 20737,
+  "started_at": "2026-05-26T13:18:40+00:00"
+}

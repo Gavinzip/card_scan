@@ -1,0 +1,31 @@
+{
+  "allow_sample": false,
+  "allow_watermarked": false,
+  "backend": "timm",
+  "completed_at": "2026-05-27T14:36:29+00:00",
+  "device": "mps",
+  "embedding_dim": 768,
+  "excluded_before_limit": {
+    "missing_local_image_path": 0,
+    "sample": 0,
+    "watermarked": 0
+  },
+  "image_manifest": "data/processed/pokemon_ja_canonical_image_manifest.jsonl",
+  "model": "vit_base_patch14_dinov2",
+  "outputs": {
+    "embeddings": "data/processed/pokemon_ja_canonical_image_index_base/image_embeddings.npy",
+    "faiss_index": "data/processed/pokemon_ja_canonical_image_index_base/faiss.index",
+    "manifest": "data/processed/pokemon_ja_canonical_image_index_base/image_embedding_manifest.jsonl"
+  },
+  "pretrained": "laion2b_s34b_b79k",
+  "records_indexed": 21416,
+  "reuse_by_key_update": {
+    "added_records": 2617,
+    "backup_dir": "data/processed/pokemon_ja_canonical_image_index_base/backup_before_reuse_by_key_update_20260527T141957+0000",
+    "changed_or_added_records": 3562,
+    "removed_records": 533,
+    "reused_records": 17854,
+    "updated_at": "2026-05-27T14:36:29+00:00"
+  },
+  "started_at": "2026-05-26T14:05:04+00:00"
+}

@@ -1,0 +1,23 @@
+{
+  "allow_sample": true,
+  "allow_watermarked": true,
+  "backend": "timm",
+  "completed_at": "2026-05-27T15:46:49+00:00",
+  "device": "cuda",
+  "embedding_dim": 768,
+  "excluded_before_limit": {
+    "missing_local_image_path": 0,
+    "sample": 0,
+    "watermarked": 0
+  },
+  "image_manifest": "/content/card_scan_onepiece_base/onepiece_base/onepiece_base_image_manifest_colab.jsonl",
+  "model": "vit_base_patch14_dinov2",
+  "outputs": {
+    "embeddings": "data/processed/onepiece_image_index_base/image_embeddings.npy",
+    "faiss_index": "data/processed/onepiece_image_index_base/faiss.index",
+    "manifest": "data/processed/onepiece_image_index_base/image_embedding_manifest.jsonl"
+  },
+  "pretrained": "laion2b_s34b_b79k",
+  "records_indexed": 6060,
+  "started_at": "2026-05-27T15:28:02+00:00"
+}
