@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import subprocess
 import time
 import unicodedata
@@ -1151,6 +1152,8 @@ def recognize_card_bottom_code(card_image: Any) -> dict[str, Any]:
     swift_script = ROOT / "scripts/quality/ocr_vision_text.swift"
     if not swift_script.exists():
         return {"status": "unavailable", "reason": "ocr_vision_text.swift is missing"}
+    if shutil.which("swift") is None:
+        return {"status": "unavailable", "reason": "swift is not installed"}
 
     rois = {
         "bottom_left_tight": (0.00, 0.875, 0.38, 0.985),
@@ -3457,6 +3460,10 @@ def health() -> dict[str, Any]:
         "default_rerank_candidates": DEFAULT_VISUAL_RERANK_CANDIDATES,
         "default_card_code_ocr": DEFAULT_CARD_CODE_OCR,
         "card_code_ocr_script_exists": (ROOT / "scripts/quality/ocr_vision_text.swift").exists(),
+        "card_code_ocr_available": (
+            (ROOT / "scripts/quality/ocr_vision_text.swift").exists()
+            and shutil.which("swift") is not None
+        ),
         "card_code_ocr_exact_boost": DEFAULT_CARD_CODE_OCR_EXACT_BOOST,
         "default_language_rerank": DEFAULT_LANGUAGE_RERANK,
         "default_language_rerank_boost": DEFAULT_LANGUAGE_RERANK_BOOST,
