@@ -1,6 +1,6 @@
-# Cloud/server Dockerfile. Zeabur uses this file by default via zbpack.json.
-# Use Dockerfile.mac for Apple Silicon self-hosted Zeabur nodes.
-FROM python:3.12-slim
+# Apple Silicon / arm64 Dockerfile for self-hosted Zeabur nodes running on a Mac.
+# Docker on macOS does not expose MPS/Metal to Linux containers, so this remains CPU-only.
+FROM --platform=linux/arm64/v8 python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -46,4 +46,4 @@ COPY data/processed/pokemon_ja_canonical_image_manifest.jsonl ./data/processed/p
 
 EXPOSE 8080
 
-CMD ["sh", "-c", "echo \"starting card_scan on port ${PORT:-8080}\" && exec uvicorn scripts.server.recognition_api:app --host 0.0.0.0 --port ${PORT:-8080} --workers ${WEB_CONCURRENCY:-1}"]
+CMD ["sh", "-c", "echo \"starting card_scan arm64 on port ${PORT:-8080}\" && exec uvicorn scripts.server.recognition_api:app --host 0.0.0.0 --port ${PORT:-8080} --workers ${WEB_CONCURRENCY:-1}"]
