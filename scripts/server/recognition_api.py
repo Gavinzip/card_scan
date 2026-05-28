@@ -47,7 +47,7 @@ from scripts.cropping.auto_crop_cards import (
 from scripts.indexing.query_image_index import load_model
 from scripts.lib.io_utils import iter_jsonl, read_json
 from scripts.lib.schema import utc_now_iso
-from scripts.server.market_report import DEFAULT_JPY_RATE, REPORT_OUTPUT_DIR, build_market_report
+from scripts.server.market_report import REPORT_OUTPUT_DIR, build_market_report
 
 APP_VERSION = "0.1.0"
 FRONTEND_DIR = ROOT / "web"
@@ -4499,7 +4499,7 @@ async def market_report(
     aspect_tolerance: float = DEFAULT_ASPECT_TOLERANCE,
     include_posters: bool = True,
     include_poster_base64: bool = False,
-    jpy_rate: float = DEFAULT_JPY_RATE,
+    jpy_rate: float | None = None,
 ) -> dict[str, Any]:
     recognition_payload = await recognize(
         file=file,

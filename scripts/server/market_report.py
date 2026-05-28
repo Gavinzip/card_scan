@@ -22,6 +22,8 @@ ROOT = Path(__file__).resolve().parents[2]
 REPORT_OUTPUT_DIR = Path(os.environ.get("CARD_SCAN_REPORT_OUTPUT_DIR", "/tmp/card_scan_reports"))
 SNKR_HISTORY_TIMEOUT = float(os.environ.get("CARD_SCAN_SNKR_HISTORY_TIMEOUT", "12"))
 DEFAULT_JPY_RATE = float(os.environ.get("CARD_SCAN_MARKET_JPY_RATE", "150"))
+FX_RATE_URL = os.environ.get("CARD_SCAN_FX_RATE_URL", "https://open.er-api.com/v6/latest/USD")
+FX_RATE_TIMEOUT = float(os.environ.get("CARD_SCAN_FX_RATE_TIMEOUT", "5"))
 
 
 def safe_report_filename(value: str) -> str:
@@ -97,6 +99,59 @@ def fetch_snkr_trading_histories(product_id: str, per_page: int = 100, page: int
         "seconds": time.perf_counter() - started,
         "histories": histories if isinstance(histories, list) else [],
     }
+
+
+def fetch_live_usd_jpy_rate() -> dict[str, Any]:
+    request = Request(
+        FX_RATE_URL,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0 card-scan-market-report/0.1",
+        },
+        method="GET",
+    )
+    started = time.perf_counter()
+    with urlopen(request, timeout=FX_RATE_TIMEOUT) as response:
+        payload = json.loads(response.read().decode("utf-8", errors="replace"))
+    rates = payload.get("rates") if isinstance(payload, dict) else {}
+    usd_jpy = float((rates or {}).get("JPY") or 0)
+    if usd_jpy <= 0:
+        raise ValueError("FX response did not include a positive USD/JPY rate")
+    return {
+        "base": "USD",
+        "quote": "JPY",
+        "usd_jpy": usd_jpy,
+        "source": FX_RATE_URL,
+        "fetched_at": utc_now_iso(),
+        "provider_updated_at": payload.get("time_last_update_utc") or payload.get("time_last_update_unix"),
+        "seconds": time.perf_counter() - started,
+        "status": str(payload.get("result") or "ok"),
+    }
+
+
+def resolve_jpy_rate(jpy_rate: float | None = None) -> dict[str, Any]:
+    if jpy_rate is not None:
+        rate = normalize_jpy_rate(jpy_rate)
+        return {
+            "base": "USD",
+            "quote": "JPY",
+            "usd_jpy": rate,
+            "source": "request_override",
+            "fetched_at": utc_now_iso(),
+            "status": "override",
+        }
+    try:
+        return fetch_live_usd_jpy_rate()
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "base": "USD",
+            "quote": "JPY",
+            "usd_jpy": normalize_jpy_rate(DEFAULT_JPY_RATE),
+            "source": "fallback_env",
+            "fetched_at": utc_now_iso(),
+            "status": "fallback",
+            "error": str(exc),
+        }
 
 
 def parse_dt(value: Any) -> datetime:
@@ -265,10 +320,6 @@ def money0(value: Any) -> str:
     return f"${usd(value):.0f}"
 
 
-def jpy_display(usd_value: Any, jpy_rate: float) -> str:
-    return f"¥{jpy_from_usd(usd_value, jpy_rate):,} (~${usd(usd_value):.0f} USD)"
-
-
 def build_markdown_report(
     recognition: dict[str, Any],
     product_id: str,
@@ -276,6 +327,7 @@ def build_markdown_report(
     raw_bucket: dict[str, Any],
     psa_bucket: dict[str, Any],
     jpy_rate: float,
+    fx_rate: dict[str, Any],
 ) -> str:
     top = top_result(recognition)
     name = best_display_name(top)
@@ -321,6 +373,10 @@ def build_markdown_report(
     lines.append(
         "IQR filter: keep records from `Q1 - 1.5*IQR` through `Q3 + 1.5*IQR` per bucket."
     )
+    lines.append(
+        f"FX rate: 1 USD = {float(fx_rate.get('usd_jpy') or jpy_rate):.4f} JPY "
+        f"({fx_rate.get('source')}, {fx_rate.get('status')})."
+    )
     lines.append("---")
     lines.append("")
     lines.append("## Raw / A Transactions")
@@ -334,7 +390,7 @@ def build_markdown_report(
     lines.append("## PSA 10 Transactions")
     for item in psa_bucket["kept_records"][:10]:
         lines.append(
-            f"📅 {date_label(item.get('tradedAt'))}      💰 {jpy_display(price_usd(item, jpy_rate), jpy_rate)}      📝 狀態：PSA 10"
+            f"📅 {date_label(item.get('tradedAt'))}      💰 {money(price_usd(item, jpy_rate))} USD      📝 狀態：PSA 10"
         )
     if not psa_bucket["kept_records"]:
         lines.append("PSA 10: 無成交紀錄")
@@ -426,7 +482,7 @@ async def render_market_data_poster(
         "PriceCharting Trend": "Raw Price Trend",
         "Confirmed sales (USD)": "SNKRDUNK Raw/A sales (USD, IQR-filtered)",
         "SNKRDUNK Trend": "PSA 10 Trend",
-        "Real-time marketplace (JPY &rarr; USD)": "SNKRDUNK PSA 10 sales (JPY &rarr; USD, IQR-filtered)",
+        "Real-time marketplace (JPY &rarr; USD)": "SNKRDUNK PSA 10 sales (USD, live FX, IQR-filtered)",
         "Combined Transaction Report": "Raw vs PSA 10 Transaction Report",
         "Global Aggregated Market Stats": "IQR-Filtered Market Stats",
     }.items():
@@ -446,7 +502,7 @@ async def render_market_data_poster(
         psa_records,
         color_line=chart_line,
         target_grade="PSA 10",
-        is_jpy=True,
+        is_jpy=False,
         theme="light",
         jpy_rate=jpy_rate,
     )
@@ -458,7 +514,7 @@ async def render_market_data_poster(
     table_head_text = "text-slate-600"
     table_body_divider = "divide-slate-200/80"
     raw_rows = image_generator.generate_table_rows(raw_records, is_jpy=False, target_grade=None, theme="light", ui_lang="zh", max_rows=6, jpy_rate=jpy_rate)
-    psa_rows = image_generator.generate_table_rows(psa_records, is_jpy=True, target_grade="PSA 10", theme="light", ui_lang="zh", max_rows=6, jpy_rate=jpy_rate)
+    psa_rows = image_generator.generate_table_rows(psa_records, is_jpy=False, target_grade="PSA 10", theme="light", ui_lang="zh", max_rows=6, jpy_rate=jpy_rate)
     pc_table_html = f"""
                 <div class="flex-1 glass-panel rounded-xl overflow-hidden p-3 border {table_outer_border}">
                     <table class="w-full text-left border-collapse">
@@ -523,7 +579,7 @@ async def build_market_report(
     base_url: str | None = None,
     include_posters: bool = True,
     include_poster_base64: bool = False,
-    jpy_rate: float = DEFAULT_JPY_RATE,
+    jpy_rate: float | None = None,
 ) -> dict[str, Any]:
     report_id = f"{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:10]}"
     output_dir = REPORT_OUTPUT_DIR / report_id
@@ -550,17 +606,19 @@ async def build_market_report(
             },
         }
 
+    fx_rate = resolve_jpy_rate(jpy_rate)
+    resolved_jpy_rate = float(fx_rate.get("usd_jpy") or DEFAULT_JPY_RATE)
     history_payload = fetch_snkr_trading_histories(product_id)
     histories = history_payload.get("histories") if history_payload.get("status") == "ok" else []
     histories = histories if isinstance(histories, list) else []
-    raw_bucket = iqr_filter(histories, "A", jpy_rate)
-    psa_bucket = iqr_filter(histories, "PSA 10", jpy_rate)
-    markdown = build_markdown_report(recognition, product_id, snkr_url, raw_bucket, psa_bucket, jpy_rate)
+    raw_bucket = iqr_filter(histories, "A", resolved_jpy_rate)
+    psa_bucket = iqr_filter(histories, "PSA 10", resolved_jpy_rate)
+    markdown = build_markdown_report(recognition, product_id, snkr_url, raw_bucket, psa_bucket, resolved_jpy_rate, fx_rate)
     markdown_path = output_dir / "market_report.md"
     markdown_path.write_text(markdown, encoding="utf-8")
 
-    raw_records = usd_records_for_poster(raw_bucket["kept_records"], "Raw / A", jpy_rate)
-    psa_records = snkr_records_for_poster(psa_bucket["kept_records"], "PSA 10", jpy_rate)
+    raw_records = usd_records_for_poster(raw_bucket["kept_records"], "Raw / A", resolved_jpy_rate)
+    psa_records = usd_records_for_poster(psa_bucket["kept_records"], "PSA 10", resolved_jpy_rate)
     files: dict[str, Any] = {
         "markdown": {
             "path": str(markdown_path),
@@ -573,12 +631,13 @@ async def build_market_report(
             card_data = card_data_from_recognition(recognition, raw_bucket["summary"], psa_bucket["summary"])
             profile_generated, _unused_data = await image_generator.generate_report(
                 card_data,
-                psa_records + snkr_records_for_poster(raw_bucket["kept_records"], "A", jpy_rate),
+                snkr_records_for_poster(psa_bucket["kept_records"], "PSA 10", resolved_jpy_rate)
+                + snkr_records_for_poster(raw_bucket["kept_records"], "A", resolved_jpy_rate),
                 [],
                 out_dir=str(output_dir),
                 template_version="v3",
                 ui_lang="zh",
-                jpy_rate=jpy_rate,
+                jpy_rate=resolved_jpy_rate,
             )
             profile_path = output_dir / "poster_profile.png"
             shutil.copyfile(profile_generated, profile_path)
@@ -591,7 +650,7 @@ async def build_market_report(
                 psa_records=psa_records,
                 raw_summary=raw_bucket["summary"],
                 psa_summary=psa_bucket["summary"],
-                jpy_rate=jpy_rate,
+                jpy_rate=resolved_jpy_rate,
             )
             for key, path in {"profile": profile_path, "market_data": data_path}.items():
                 files[key] = {
@@ -618,6 +677,8 @@ async def build_market_report(
         "prices": {
             "source": "SNKRDUNK trading histories",
             "iqr_method": "Q1 - 1.5*IQR <= price <= Q3 + 1.5*IQR",
+            "fx_rate": fx_rate,
+            "jpy_rate": resolved_jpy_rate,
             "raw_A": raw_bucket["summary"],
             "psa_10": psa_bucket["summary"],
         },
