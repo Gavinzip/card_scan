@@ -12,6 +12,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     YOLO_CONFIG_DIR=/tmp/Ultralytics \
     CARD_SCAN_DEVICE=cpu \
     CARD_SCAN_PRELOAD=false \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
     CARD_SCAN_INDEXES="pokemon_en=data/processed/image_index_base,pokemon_ja=data/processed/pokemon_ja_canonical_image_index_base,onepiece=data/processed/onepiece_image_index_base"
 
 WORKDIR /app

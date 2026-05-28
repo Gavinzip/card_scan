@@ -4,6 +4,8 @@ from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 import base64
 import io
 import html as html_lib
+import subprocess
+import sys
 from collections import deque
 import matplotlib
 
@@ -124,6 +126,7 @@ class AsyncBrowserManager:
     _browser = None
     _playwright = None
     _lock = asyncio.Lock()
+    _install_attempted = False
 
     @classmethod
     async def get_browser(cls):
@@ -137,7 +140,18 @@ class AsyncBrowserManager:
             if needs_launch:
                 await cls._teardown_locked()
                 cls._playwright = await async_playwright().start()
-                cls._browser = await cls._playwright.chromium.launch(headless=True)
+                try:
+                    cls._browser = await cls._playwright.chromium.launch(headless=True)
+                except Exception as exc:
+                    if not cls._install_attempted and _is_missing_playwright_browser_error(exc):
+                        cls._install_attempted = True
+                        await cls._teardown_locked()
+                        await _install_playwright_chromium()
+                        cls._playwright = await async_playwright().start()
+                        cls._browser = await cls._playwright.chromium.launch(headless=True)
+                    else:
+                        await cls._teardown_locked()
+                        raise
             return cls._browser
 
     @classmethod
@@ -169,6 +183,22 @@ class AsyncBrowserManager:
 def _is_browser_context_closed_error(exc: Exception) -> bool:
     msg = str(exc or "").lower()
     return ("target page, context or browser has been closed" in msg) or ("browser has been closed" in msg)
+
+
+def _is_missing_playwright_browser_error(exc: Exception) -> bool:
+    msg = str(exc or "").lower()
+    return "executable doesn't exist" in msg and ("playwright install" in msg or "chromium" in msg)
+
+
+async def _install_playwright_chromium() -> None:
+    def _run_install() -> None:
+        subprocess.run(
+            [sys.executable, "-m", "playwright", "install", "chromium"],
+            check=True,
+            timeout=180,
+        )
+
+    await asyncio.to_thread(_run_install)
 
 
 async def _new_browser_context(*, viewport: dict, device_scale_factor: int = 2):
