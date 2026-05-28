@@ -118,13 +118,71 @@ def usd(value: Any) -> float:
         return 0.0
 
 
+def normalize_jpy_rate(jpy_rate: float) -> float:
+    try:
+        rate = float(jpy_rate)
+        if rate > 0:
+            return rate
+    except (TypeError, ValueError):
+        pass
+    return DEFAULT_JPY_RATE
+
+
+def first_number(text: str) -> float | None:
+    match = re.search(r"[-+]?\d[\d,]*(?:\.\d+)?", text)
+    if not match:
+        return None
+    try:
+        return float(match.group(0).replace(",", ""))
+    except ValueError:
+        return None
+
+
+def snkr_price_format(item: dict[str, Any]) -> str:
+    for key in ("priceFormat", "price_format", "formattedPrice", "formatted_price"):
+        value = item.get(key)
+        if value:
+            return str(value)
+    return ""
+
+
+def price_usd(item: dict[str, Any], jpy_rate: float) -> float:
+    rate = normalize_jpy_rate(jpy_rate)
+    price_format = snkr_price_format(item)
+    formatted_value = first_number(price_format)
+    price_format_lower = price_format.lower()
+    if formatted_value is not None:
+        if "¥" in price_format or "￥" in price_format or "jpy" in price_format_lower or "円" in price_format:
+            return formatted_value / rate
+        if "$" in price_format or "usd" in price_format_lower or "us $" in price_format_lower:
+            return formatted_value
+
+    currency = str(item.get("currency") or item.get("priceCurrency") or "").strip().lower()
+    raw_price = usd(item.get("price"))
+    if currency in {"jpy", "yen", "jp¥", "￥", "¥"}:
+        return raw_price / rate
+    return raw_price
+
+
+def price_jpy(item: dict[str, Any], jpy_rate: float) -> int:
+    rate = normalize_jpy_rate(jpy_rate)
+    price_format = snkr_price_format(item)
+    formatted_value = first_number(price_format)
+    price_format_lower = price_format.lower()
+    if formatted_value is not None and (
+        "¥" in price_format or "￥" in price_format or "jpy" in price_format_lower or "円" in price_format
+    ):
+        return int(round(formatted_value))
+    return int(round(price_usd(item, rate) * rate))
+
+
 def jpy_from_usd(value: Any, jpy_rate: float) -> int:
     return int(round(usd(value) * jpy_rate))
 
 
-def iqr_filter(histories: list[dict[str, Any]], condition: str) -> dict[str, Any]:
+def iqr_filter(histories: list[dict[str, Any]], condition: str, jpy_rate: float) -> dict[str, Any]:
     bucket = [item for item in histories if item.get("condition") == condition]
-    values = [usd(item.get("price")) for item in bucket]
+    values = [price_usd(item, jpy_rate) for item in bucket]
     if len(values) >= 4:
         q1, _median_raw, q3 = statistics.quantiles(sorted(values), n=4, method="inclusive")
     elif values:
@@ -139,12 +197,12 @@ def iqr_filter(histories: list[dict[str, Any]], condition: str) -> dict[str, Any
     kept: list[dict[str, Any]] = []
     dropped: list[dict[str, Any]] = []
     for item in bucket:
-        price = usd(item.get("price"))
+        price = price_usd(item, jpy_rate)
         if lower <= price <= upper:
             kept.append(item)
         else:
             dropped.append(item)
-    kept_values = [usd(item.get("price")) for item in kept]
+    kept_values = [price_usd(item, jpy_rate) for item in kept]
     average_usd = sum(kept_values) / len(kept_values) if kept_values else 0.0
     return {
         "condition": condition,
@@ -170,7 +228,7 @@ def iqr_filter(histories: list[dict[str, Any]], condition: str) -> dict[str, Any
             "median_usd": statistics.median(kept_values) if kept_values else 0.0,
             "min_usd": min(kept_values) if kept_values else 0.0,
             "max_usd": max(kept_values) if kept_values else 0.0,
-            "dropped_prices_usd": [usd(item.get("price")) for item in dropped],
+            "dropped_prices_usd": [price_usd(item, jpy_rate) for item in dropped],
         },
     }
 
@@ -180,19 +238,19 @@ def snkr_records_for_poster(records: list[dict[str, Any]], grade: str, jpy_rate:
         {
             "date": date_label(item.get("tradedAt")),
             "grade": grade,
-            "price": jpy_from_usd(item.get("price"), jpy_rate),
+            "price": price_jpy(item, jpy_rate),
             "source": "SNKRDUNK",
         }
         for item in records
     ]
 
 
-def usd_records_for_poster(records: list[dict[str, Any]], grade: str) -> list[dict[str, Any]]:
+def usd_records_for_poster(records: list[dict[str, Any]], grade: str, jpy_rate: float) -> list[dict[str, Any]]:
     return [
         {
             "date": date_label(item.get("tradedAt")),
             "grade": grade,
-            "price": usd(item.get("price")),
+            "price": price_usd(item, jpy_rate),
             "source": "SNKRDUNK",
         }
         for item in records
@@ -267,13 +325,17 @@ def build_markdown_report(
     lines.append("")
     lines.append("## Raw / A Transactions")
     for item in raw_bucket["kept_records"][:10]:
-        lines.append(f"📅 {date_label(item.get('tradedAt'))}      💰 {money(item.get('price'))} USD      📝 狀態：Raw / A")
+        lines.append(
+            f"📅 {date_label(item.get('tradedAt'))}      💰 {money(price_usd(item, jpy_rate))} USD      📝 狀態：Raw / A"
+        )
     if not raw_bucket["kept_records"]:
         lines.append("Raw / A: 無成交紀錄")
     lines.append("")
     lines.append("## PSA 10 Transactions")
     for item in psa_bucket["kept_records"][:10]:
-        lines.append(f"📅 {date_label(item.get('tradedAt'))}      💰 {jpy_display(item.get('price'), jpy_rate)}      📝 狀態：PSA 10")
+        lines.append(
+            f"📅 {date_label(item.get('tradedAt'))}      💰 {jpy_display(price_usd(item, jpy_rate), jpy_rate)}      📝 狀態：PSA 10"
+        )
     if not psa_bucket["kept_records"]:
         lines.append("PSA 10: 無成交紀錄")
     lines.append("---")
@@ -491,13 +553,13 @@ async def build_market_report(
     history_payload = fetch_snkr_trading_histories(product_id)
     histories = history_payload.get("histories") if history_payload.get("status") == "ok" else []
     histories = histories if isinstance(histories, list) else []
-    raw_bucket = iqr_filter(histories, "A")
-    psa_bucket = iqr_filter(histories, "PSA 10")
+    raw_bucket = iqr_filter(histories, "A", jpy_rate)
+    psa_bucket = iqr_filter(histories, "PSA 10", jpy_rate)
     markdown = build_markdown_report(recognition, product_id, snkr_url, raw_bucket, psa_bucket, jpy_rate)
     markdown_path = output_dir / "market_report.md"
     markdown_path.write_text(markdown, encoding="utf-8")
 
-    raw_records = usd_records_for_poster(raw_bucket["kept_records"], "Raw / A")
+    raw_records = usd_records_for_poster(raw_bucket["kept_records"], "Raw / A", jpy_rate)
     psa_records = snkr_records_for_poster(psa_bucket["kept_records"], "PSA 10", jpy_rate)
     files: dict[str, Any] = {
         "markdown": {
