@@ -914,6 +914,20 @@ def apply_language_rerank(results: list[dict[str, Any]], language_payload: dict[
     if language_payload.get("status") != "ok" or target not in {"ja", "en"} or boost <= 0:
         return results
 
+    primary_family = candidate_family(results[0]) if results else None
+    language_payload["primary_candidate_family"] = primary_family
+    if primary_family and primary_family != "pokemon":
+        language_payload["boost_skipped"] = f"primary_candidate_family:{primary_family}"
+        skipped: list[dict[str, Any]] = []
+        for result in results:
+            item = dict(result)
+            item["language_hint"] = target
+            item["language_hint_match"] = False
+            item["language_hint_boost"] = 0.0
+            item["language_hint_skipped"] = f"primary_candidate_family:{primary_family}"
+            skipped.append(item)
+        return skipped
+
     reranked: list[dict[str, Any]] = []
     for result in results:
         item = dict(result)
