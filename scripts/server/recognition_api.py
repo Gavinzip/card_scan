@@ -63,6 +63,15 @@ INDEX_CONFIG = os.environ.get("CARD_SCAN_INDEXES", DEFAULT_INDEXES)
 CROP_MODEL_PATH = Path(os.environ.get("CARD_SCAN_CROP_MODEL_PATH", ROOT / "data/models/production/current/cardcaptor_v3_best.pt"))
 CROP_MODEL_REPO = os.environ.get("CARD_SCAN_CROP_MODEL_REPO", DEFAULT_REPO_ID)
 CROP_MODEL_FILE = os.environ.get("CARD_SCAN_CROP_MODEL_FILE", DEFAULT_MODEL_FILE)
+TCGP_OBB_MODEL_PATH = Path(
+    os.environ.get("CARD_SCAN_TCGP_OBB_MODEL_PATH", ROOT / "data/models/experiments/tcgp_yolo11n_obb/best.onnx")
+)
+TCGP_OBB_HUB_MODEL = os.environ.get(
+    "CARD_SCAN_TCGP_OBB_HUB_MODEL",
+    "https://hub.ultralytics.com/models/dQfecRsRsXbAKXOXHLHJ",
+)
+DEFAULT_CROP_MODE = os.environ.get("CARD_SCAN_CROP_MODE", "tcgp_obb")
+DEFAULT_CARD_DETECTOR = os.environ.get("CARD_SCAN_CARD_DETECTOR", "tcgp_obb")
 DEFAULT_CONFIDENCE = float(os.environ.get("CARD_SCAN_CROP_CONFIDENCE", "0.25"))
 DEFAULT_IMGSZ = int(os.environ.get("CARD_SCAN_CROP_IMGSZ", "1024"))
 DEFAULT_PADDING = float(os.environ.get("CARD_SCAN_CROP_PADDING", "0"))
@@ -270,6 +279,7 @@ class LoadedIndex:
 class RecognitionService:
     def __init__(self) -> None:
         self.crop_model: Any | None = None
+        self.tcgp_obb_model: Any | None = None
         self.embedding_model: Any | None = None
         self.preprocess: Any | None = None
         self.device: str | None = None
@@ -289,6 +299,16 @@ class RecognitionService:
             model_path = ensure_model(CROP_MODEL_PATH, CROP_MODEL_REPO, CROP_MODEL_FILE)
             self.crop_model = YOLO(str(model_path))
         return self.crop_model
+
+    def load_tcgp_obb_model(self) -> Any:
+        if self.tcgp_obb_model is None:
+            if TCGP_OBB_MODEL_PATH.exists() and TCGP_OBB_MODEL_PATH.stat().st_size > 0:
+                model_ref = str(TCGP_OBB_MODEL_PATH)
+            else:
+                model_ref = TCGP_OBB_HUB_MODEL
+            kwargs = {"task": "obb"} if str(model_ref).lower().endswith(".onnx") else {}
+            self.tcgp_obb_model = YOLO(model_ref, **kwargs)
+        return self.tcgp_obb_model
 
     def load_indexes(self) -> list[LoadedIndex]:
         if self.indexes is not None:
@@ -343,7 +363,10 @@ class RecognitionService:
         if PRELOAD_SIGLIP:
             self.load_siglip_model()
         if PRELOAD_CROP_MODEL:
-            self.load_crop_model()
+            if normalize_card_detector(DEFAULT_CARD_DETECTOR) == "tcgp_yolo11n_obb":
+                self.load_tcgp_obb_model()
+            else:
+                self.load_crop_model()
 
     def load_siglip_model(self) -> None:
         if self.siglip_model is not None:
@@ -686,6 +709,163 @@ def encode_debug_crop(crop_image: Any) -> str:
     if not ok:
         raise HTTPException(status_code=500, detail="Could not encode debug crop image.")
     return base64.b64encode(buffer.tobytes()).decode("ascii")
+
+
+def polygon_geometry(polygon: Any, image_width: int, image_height: int) -> dict[str, Any]:
+    points = np.asarray(polygon, dtype="float32").reshape(-1, 2)
+    x1 = float(points[:, 0].min())
+    y1 = float(points[:, 1].min())
+    x2 = float(points[:, 0].max())
+    y2 = float(points[:, 1].max())
+    center_x = float(points[:, 0].mean())
+    center_y = float(points[:, 1].mean())
+    area = float(abs(cv2.contourArea(points)))
+    image_area = max(1, image_width * image_height)
+    return {
+        "box": {
+            "left": x1,
+            "top": y1,
+            "right": x2,
+            "bottom": y2,
+            "width": max(0.0, x2 - x1),
+            "height": max(0.0, y2 - y1),
+        },
+        "box_ratio": {
+            "left": x1 / image_width,
+            "top": y1 / image_height,
+            "right": x2 / image_width,
+            "bottom": y2 / image_height,
+        },
+        "center": {
+            "x": center_x,
+            "y": center_y,
+        },
+        "center_ratio": {
+            "x": center_x / image_width,
+            "y": center_y / image_height,
+        },
+        "area_ratio": area / image_area,
+    }
+
+
+def sort_multi_card_detections(detections: list[dict[str, Any]], sort_mode: str) -> list[dict[str, Any]]:
+    normalized = sort_mode.strip().lower().replace("-", "_")
+    if normalized in {"confidence", "score"}:
+        return sorted(detections, key=lambda item: float(item.get("confidence") or 0.0), reverse=True)
+    if normalized not in {"reading_order", "position", "grid"}:
+        raise HTTPException(status_code=400, detail=f"Unsupported sort: {sort_mode}")
+
+    def detection_position(item: dict[str, Any]) -> tuple[float, float, float]:
+        points = np.asarray(item["polygon"], dtype="float32").reshape(-1, 2)
+        center_x = float(points[:, 0].mean())
+        center_y = float(points[:, 1].mean())
+        height = float(points[:, 1].max() - points[:, 1].min())
+        return center_x, center_y, height
+
+    positioned = [(item, *detection_position(item)) for item in detections]
+    heights = sorted(max(1.0, height) for _item, _x, _y, height in positioned)
+    median_height = heights[len(heights) // 2] if heights else 1.0
+    row_threshold = max(16.0, median_height * 0.45)
+
+    rows: list[dict[str, Any]] = []
+    for item, center_x, center_y, _height in sorted(positioned, key=lambda entry: entry[2]):
+        target_row = None
+        for row in rows:
+            if abs(center_y - row["center_y"]) <= row_threshold:
+                target_row = row
+                break
+        if target_row is None:
+            rows.append({"center_y": center_y, "items": [(item, center_x, center_y)]})
+        else:
+            target_row["items"].append((item, center_x, center_y))
+            target_row["center_y"] = sum(entry[2] for entry in target_row["items"]) / len(target_row["items"])
+
+    output: list[dict[str, Any]] = []
+    for row in sorted(rows, key=lambda item: item["center_y"]):
+        output.extend(item for item, _center_x, _center_y in sorted(row["items"], key=lambda entry: entry[1]))
+    return output
+
+
+def normalize_card_detector(detector: str) -> str:
+    normalized = detector.strip().lower().replace("-", "_")
+    if normalized in {"tcgp_obb", "tcgp_yolo11n_obb", "1vcian"}:
+        return "tcgp_yolo11n_obb"
+    if normalized in {"cardcaptor_yolo", "cardcaptor", "yolo", "model", "detector"}:
+        return "cardcaptor_yolo"
+    raise HTTPException(status_code=400, detail=f"Unsupported detector: {detector}")
+
+
+def detect_card_crops_from_image(
+    image: Any,
+    detector: str,
+    confidence: float,
+    imgsz: int,
+    max_cards: int,
+    padding: float,
+    target_aspect: float,
+    aspect_tolerance: float,
+    sort: str,
+) -> dict[str, Any]:
+    if max_cards < 1 or max_cards > 100:
+        raise HTTPException(status_code=400, detail="max_cards must be between 1 and 100.")
+
+    image_height, image_width = image.shape[:2]
+    detector_name = normalize_card_detector(detector)
+    model = service.load_tcgp_obb_model() if detector_name == "tcgp_yolo11n_obb" else service.load_crop_model()
+    effective_imgsz = 640 if detector_name == "tcgp_yolo11n_obb" and imgsz == DEFAULT_IMGSZ else imgsz
+
+    timings: dict[str, float] = {}
+    detect_start = time.perf_counter()
+    result = model.predict(
+        source=image,
+        conf=confidence,
+        imgsz=effective_imgsz,
+        verbose=False,
+    )[0]
+    raw_detections = detections_from_result(result, np)
+    timings["detect_seconds"] = time.perf_counter() - detect_start
+
+    confidence_sorted = sorted(raw_detections, key=lambda item: float(item.get("confidence") or 0.0), reverse=True)
+    selected = sort_multi_card_detections(confidence_sorted, sort)[:max_cards]
+    confidence_rank = {id(item): rank for rank, item in enumerate(confidence_sorted, start=1)}
+
+    cards: list[dict[str, Any]] = []
+    crop_start = time.perf_counter()
+    for index, detection in enumerate(selected, start=1):
+        polygon = np.asarray(detection["polygon"], dtype="float32")
+        crop_image = warp_card_to_target_aspect(image, polygon, padding, target_aspect)
+        crop_image, aspect_trimmed = trim_to_aspect(crop_image, target_aspect, aspect_tolerance)
+        crop_height, crop_width = crop_image.shape[:2]
+        geometry = polygon_geometry(polygon, image_width, image_height)
+        cards.append(
+            {
+                "index": index,
+                "confidence_rank": confidence_rank.get(id(detection)),
+                "confidence": float(detection.get("confidence") or 0.0),
+                "class_id": detection.get("class_id"),
+                "class_name": detection.get("class_name"),
+                "polygon": polygon.astype(float).tolist(),
+                **geometry,
+                "crop": {
+                    "width": crop_width,
+                    "height": crop_height,
+                    "target_aspect": target_aspect,
+                    "aspect_trimmed": aspect_trimmed,
+                },
+                "crop_image": crop_image,
+            }
+        )
+    timings["crop_seconds"] = time.perf_counter() - crop_start
+
+    return {
+        "detector": detector_name,
+        "input_width": image_width,
+        "input_height": image_height,
+        "imgsz": effective_imgsz,
+        "detections_total": len(raw_detections),
+        "cards": cards,
+        "timings": timings,
+    }
 
 
 def crop_ratio(image: Any, box: tuple[float, float, float, float]) -> Any:
@@ -3438,7 +3618,7 @@ def api_info() -> dict[str, Any]:
         "name": "TCG Card Recognition API",
         "version": APP_VERSION,
         "frontend": "/",
-        "endpoints": ["/api", "/health", "/warmup", "/recognize"],
+        "endpoints": ["/api", "/health", "/warmup", "/recognize", "/detect-cards", "/recognize-cards"],
         "reference_image_route": REFERENCE_IMAGE_ROUTE,
     }
 
@@ -3465,6 +3645,11 @@ def health() -> dict[str, Any]:
         "preload_siglip": PRELOAD_SIGLIP,
         "preload_crop_model": PRELOAD_CROP_MODEL,
         "crop_model_loaded": service.crop_model is not None,
+        "tcgp_obb_model_loaded": service.tcgp_obb_model is not None,
+        "default_crop_mode": DEFAULT_CROP_MODE,
+        "default_card_detector": DEFAULT_CARD_DETECTOR,
+        "tcgp_obb_model_path": str(TCGP_OBB_MODEL_PATH),
+        "tcgp_obb_model_exists": TCGP_OBB_MODEL_PATH.exists(),
         "embedding_model_loaded": service.embedding_model is not None,
         "siglip_model_loaded": service.siglip_model is not None,
         "siglip_model": DEFAULT_SIGLIP_MODEL,
@@ -3554,11 +3739,175 @@ def warmup() -> dict[str, Any]:
     }
 
 
+@app.post("/detect-cards")
+async def detect_cards(
+    file: UploadFile = File(...),
+    detector: str = DEFAULT_CARD_DETECTOR,
+    confidence: float = DEFAULT_CONFIDENCE,
+    imgsz: int = DEFAULT_IMGSZ,
+    max_cards: int = 20,
+    padding: float = DEFAULT_PADDING,
+    target_aspect: float = DEFAULT_TARGET_ASPECT,
+    aspect_tolerance: float = DEFAULT_ASPECT_TOLERANCE,
+    include_crop_base64: bool = True,
+    sort: str = "reading_order",
+) -> dict[str, Any]:
+    started_at = utc_now_iso()
+    total_start = time.perf_counter()
+    image = await decode_upload(file)
+    detected = detect_card_crops_from_image(
+        image=image,
+        detector=detector,
+        confidence=confidence,
+        imgsz=imgsz,
+        max_cards=max_cards,
+        padding=padding,
+        target_aspect=target_aspect,
+        aspect_tolerance=aspect_tolerance,
+        sort=sort,
+    )
+    cards: list[dict[str, Any]] = []
+    for detected_card in detected["cards"]:
+        crop_image = detected_card["crop_image"]
+        card_payload: dict[str, Any] = {
+            **{key: value for key, value in detected_card.items() if key != "crop_image"},
+            "crop": dict(detected_card["crop"]),
+        }
+        if include_crop_base64:
+            card_payload["crop"]["jpeg_base64"] = encode_debug_crop(crop_image)
+        cards.append(card_payload)
+    timings = dict(detected["timings"])
+    timings["total_seconds"] = time.perf_counter() - total_start
+
+    return {
+        "status": "ok",
+        "started_at": started_at,
+        "detector": detected["detector"],
+        "input": {
+            "filename": file.filename,
+            "width": detected["input_width"],
+            "height": detected["input_height"],
+        },
+        "params": {
+            "confidence": confidence,
+            "imgsz": detected["imgsz"],
+            "max_cards": max_cards,
+            "padding": padding,
+            "target_aspect": target_aspect,
+            "aspect_tolerance": aspect_tolerance,
+            "sort": sort,
+            "include_crop_base64": include_crop_base64,
+        },
+        "detections_total": detected["detections_total"],
+        "cards_returned": len(cards),
+        "cards": cards,
+        "timings": timings,
+    }
+
+
+@app.post("/recognize-cards")
+async def recognize_cards(
+    file: UploadFile = File(...),
+    detector: str = "tcgp_obb",
+    confidence: float = DEFAULT_CONFIDENCE,
+    imgsz: int = DEFAULT_IMGSZ,
+    max_cards: int = 20,
+    padding: float = DEFAULT_PADDING,
+    target_aspect: float = DEFAULT_TARGET_ASPECT,
+    aspect_tolerance: float = DEFAULT_ASPECT_TOLERANCE,
+    sort: str = "reading_order",
+    top_k: int = 5,
+    per_index_top_k: int = 5,
+    include_crop_base64: bool = True,
+) -> dict[str, Any]:
+    started_at = utc_now_iso()
+    total_start = time.perf_counter()
+    image = await decode_upload(file)
+    detected = detect_card_crops_from_image(
+        image=image,
+        detector=detector,
+        confidence=confidence,
+        imgsz=imgsz,
+        max_cards=max_cards,
+        padding=padding,
+        target_aspect=target_aspect,
+        aspect_tolerance=aspect_tolerance,
+        sort=sort,
+    )
+
+    cards: list[dict[str, Any]] = []
+    embedding_seconds = 0.0
+    search_seconds = 0.0
+    search_top_k = max(top_k, per_index_top_k)
+    for detected_card in detected["cards"]:
+        crop_image = detected_card["crop_image"]
+        encode_start = time.perf_counter()
+        query = service.encode(crop_image)
+        card_embedding_seconds = time.perf_counter() - encode_start
+        search_start = time.perf_counter()
+        combined, _per_index = service.search(
+            query,
+            per_index_top_k=max(per_index_top_k, search_top_k),
+            combined_top_k=search_top_k,
+        )
+        card_search_seconds = time.perf_counter() - search_start
+        embedding_seconds += card_embedding_seconds
+        search_seconds += card_search_seconds
+        for rank, item in enumerate(combined, start=1):
+            item["rank"] = rank
+
+        card_payload: dict[str, Any] = {
+            **{key: value for key, value in detected_card.items() if key != "crop_image"},
+            "crop": dict(detected_card["crop"]),
+            "results": combined[:top_k],
+            "candidate_selection": build_candidate_selection(combined),
+            "timings": {
+                "embedding_seconds": card_embedding_seconds,
+                "search_seconds": card_search_seconds,
+            },
+        }
+        if include_crop_base64:
+            card_payload["crop"]["jpeg_base64"] = encode_debug_crop(crop_image)
+        cards.append(card_payload)
+
+    timings = dict(detected["timings"])
+    timings["embedding_seconds"] = embedding_seconds
+    timings["search_seconds"] = search_seconds
+    timings["total_seconds"] = time.perf_counter() - total_start
+
+    return {
+        "status": "ok",
+        "started_at": started_at,
+        "detector": detected["detector"],
+        "input": {
+            "filename": file.filename,
+            "width": detected["input_width"],
+            "height": detected["input_height"],
+        },
+        "params": {
+            "confidence": confidence,
+            "imgsz": detected["imgsz"],
+            "max_cards": max_cards,
+            "padding": padding,
+            "target_aspect": target_aspect,
+            "aspect_tolerance": aspect_tolerance,
+            "sort": sort,
+            "top_k": top_k,
+            "per_index_top_k": per_index_top_k,
+            "include_crop_base64": include_crop_base64,
+        },
+        "detections_total": detected["detections_total"],
+        "cards_returned": len(cards),
+        "cards": cards,
+        "timings": timings,
+    }
+
+
 @app.post("/recognize")
 async def recognize(
     file: UploadFile = File(...),
     crop: bool = True,
-    crop_mode: str = "auto",
+    crop_mode: str = DEFAULT_CROP_MODE,
     fallback_to_original: bool = False,
     top_k: int = 5,
     per_index_top_k: int = 5,
@@ -3801,6 +4150,77 @@ async def recognize(
                 "results_by_index": {},
                 "timings": timings,
             }
+    elif normalized_crop_mode in {"tcgp_obb", "tcgp_yolo11n_obb", "1vcian"}:
+        crop_start = time.perf_counter()
+        detected = detect_card_crops_from_image(
+            image=image,
+            detector=normalized_crop_mode,
+            confidence=confidence,
+            imgsz=imgsz,
+            max_cards=1,
+            padding=padding,
+            target_aspect=target_aspect,
+            aspect_tolerance=aspect_tolerance,
+            sort="confidence",
+        )
+        timings["crop_seconds"] = time.perf_counter() - crop_start
+        if detected["cards"]:
+            selected_card = detected["cards"][0]
+            debug_crop_image = selected_card["crop_image"]
+            crop_height, crop_width = debug_crop_image.shape[:2]
+            query_image = debug_crop_image
+            crop_payload = {
+                "status": "tcgp_obb",
+                "detector": detected["detector"],
+                "fallback_used": False,
+                "detections_total": detected["detections_total"],
+                "detections": [],
+                "selected_detection": {
+                    "confidence": selected_card.get("confidence"),
+                    "confidence_rank": selected_card.get("confidence_rank"),
+                    "class_id": selected_card.get("class_id"),
+                    "class_name": selected_card.get("class_name"),
+                    "polygon": selected_card.get("polygon"),
+                    "box": selected_card.get("box"),
+                    "center": selected_card.get("center"),
+                    "area_ratio": selected_card.get("area_ratio"),
+                },
+                "crop_width": crop_width,
+                "crop_height": crop_height,
+                "aspect_trimmed": selected_card.get("crop", {}).get("aspect_trimmed"),
+                "crop_image": debug_crop_image,
+            }
+        elif fallback_to_original:
+            crop_payload = {
+                "status": "no_detection",
+                "detector": detected["detector"],
+                "fallback_used": True,
+                "detections_total": detected["detections_total"],
+                "detections": [],
+            }
+            query_image = image
+        else:
+            timings["total_seconds"] = time.perf_counter() - total_start
+            return {
+                "status": "no_detection",
+                "started_at": started_at,
+                "input": {
+                    "filename": file.filename,
+                    "width": input_width,
+                    "height": input_height,
+                },
+                "crop": {
+                    "status": "no_detection",
+                    "detector": detected["detector"],
+                    "fallback_used": False,
+                    "detections_total": detected["detections_total"],
+                    "detections": [],
+                },
+                "slab_barcode": slab_barcode_payload,
+                "results": [],
+                "results_by_index": {},
+                "timings": timings,
+            }
     elif normalized_crop_mode in {"u2netp", "u2netp_foreground", "segmentation"}:
         crop_start = time.perf_counter()
         crop_payload = u2netp_foreground_crop(image=image, target_aspect=target_aspect)
@@ -3947,7 +4367,15 @@ async def recognize(
     if card_code_ocr:
         ocr_start = time.perf_counter()
         crop_status = crop_payload.get("status")
-        if crop_status in {"cropped", "fixed_inner_card", "slab_inner_card", "contour_card", "graded_slab_ratio_card", "u2netp_foreground"}:
+        if crop_status in {
+            "cropped",
+            "tcgp_obb",
+            "fixed_inner_card",
+            "slab_inner_card",
+            "contour_card",
+            "graded_slab_ratio_card",
+            "u2netp_foreground",
+        }:
             ocr_payload = recognize_card_bottom_code(query_image)
             ocr_payload["enabled"] = True
             ocr_payload["boost"] = card_code_ocr_boost

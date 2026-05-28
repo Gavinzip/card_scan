@@ -22,4 +22,11 @@ data/processed/**
 data/processed/image_index_base/test_queries/
 data/processed/image_index_base/test_crops/
 
-data/models/
+data/models/*
+!data/models/
+!data/models/experiments/
+data/models/experiments/*
+!data/models/experiments/tcgp_yolo11n_obb/
+data/models/experiments/tcgp_yolo11n_obb/*
+!data/models/experiments/tcgp_yolo11n_obb/best.onnx
+!data/models/experiments/tcgp_yolo11n_obb/metadata.yaml

@@ -153,21 +153,7 @@ async function warmupTcgpObbModel() {
 
 function maybePreloadTcgpObb() {
   if (els.cropModeInput.value !== TCGP_OBB_MODE) return;
-  const originalStatus = els.statusText.textContent;
-  if (!state.scanning) setStatus("Preparing TCGP OBB crop...");
-  warmupTcgpObbModel()
-    .then((info) => {
-      if (!state.scanning && els.cropModeInput.value === TCGP_OBB_MODE) {
-        setStatus(`TCGP OBB crop ready (${info.backend}).`);
-      }
-    })
-    .catch((error) => {
-      if (!state.scanning && els.cropModeInput.value === TCGP_OBB_MODE) {
-        setStatus(`TCGP OBB preload failed: ${error.message}`);
-      } else if (!state.scanning) {
-        setStatus(originalStatus);
-      }
-    });
+  if (!state.scanning) setStatus("TCGP OBB crop will run on the server.");
 }
 
 function fileToImage(file) {
@@ -595,12 +581,10 @@ async function warmup() {
   els.warmupButton.disabled = true;
   try {
     const warmups = [fetch(endpoint("/warmup"), { method: "POST" })];
-    if (els.cropModeInput.value === TCGP_OBB_MODE) warmups.push(warmupTcgpObbModel());
-    const [response, tcgpInfo] = await Promise.all(warmups);
+    const [response] = await Promise.all(warmups);
     const data = await response.json();
     if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
-    const tcgpText = tcgpInfo ? ` TCGP OBB ready (${tcgpInfo.backend}).` : "";
-    setStatus(`Warmup finished in ${seconds(data.seconds)}.${tcgpText}`);
+    setStatus(`Warmup finished in ${seconds(data.seconds)}.`);
     await checkHealth();
   } catch (error) {
     setStatus(`Warmup failed: ${error.message}`);
@@ -622,7 +606,7 @@ async function recognize() {
   let requestFile = state.file;
   let clientCrop = null;
   const selectedCropMode = els.cropModeInput.value;
-  const useTcgpObbCrop = els.cropToggle.checked && selectedCropMode === TCGP_OBB_MODE;
+  const useTcgpObbCrop = false;
 
   try {
     if (useTcgpObbCrop) {

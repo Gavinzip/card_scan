@@ -43,6 +43,7 @@ COPY data/processed/onepiece_image_index_base ./data/processed/onepiece_image_in
 COPY data/processed/pokemon_ja_canonical_catalog.jsonl ./data/processed/pokemon_ja_canonical_catalog.jsonl
 COPY data/processed/pokemon_ja_canonical_summary.json ./data/processed/pokemon_ja_canonical_summary.json
 COPY data/processed/pokemon_ja_canonical_image_manifest.jsonl ./data/processed/pokemon_ja_canonical_image_manifest.jsonl
+COPY data/models/experiments/tcgp_yolo11n_obb ./data/models/experiments/tcgp_yolo11n_obb
 
 EXPOSE 8080
 
