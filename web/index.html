@@ -65,9 +65,16 @@
               <span>Crop mode</span>
               <select id="cropModeInput">
                 <option value="auto" selected>Auto crop</option>
+                <option value="yolo">YOLO detector crop</option>
+                <option value="u2netp">U2NetP foreground crop</option>
+                <option value="contour">Contour card crop</option>
                 <option value="fixed_inner_card">PSA slab inner crop</option>
                 <option value="none">Original image</option>
               </select>
+            </label>
+            <label>
+              <span>Title / OCR hint</span>
+              <input id="hintTextInput" type="text" placeholder="Japanese, S11a 091/068, listing title">
             </label>
             <div class="switch-row">
               <label class="switch-label" for="cropToggle">
@@ -85,6 +92,18 @@
               <label class="switch-label" for="cardCodeOcrToggle">
                 <input id="cardCodeOcrToggle" type="checkbox" checked>
                 <span>Card code OCR</span>
+              </label>
+              <label class="switch-label" for="slabLookupToggle">
+                <input id="slabLookupToggle" type="checkbox" checked>
+                <span>Slab label OCR</span>
+              </label>
+              <label class="switch-label" for="languageRerankToggle">
+                <input id="languageRerankToggle" type="checkbox" checked>
+                <span>Language hint rerank</span>
+              </label>
+              <label class="switch-label" for="languageOcrToggle">
+                <input id="languageOcrToggle" type="checkbox" checked>
+                <span>RapidOCR language</span>
               </label>
             </div>
             <label>
@@ -109,6 +128,8 @@
           <div><dt>Crop</dt><dd>-</dd></div>
           <div><dt>Embed</dt><dd>-</dd></div>
           <div><dt>Search</dt><dd>-</dd></div>
+          <div><dt>RapidOCR</dt><dd>-</dd></div>
+          <div><dt>Slab</dt><dd>-</dd></div>
           <div><dt>Total</dt><dd>-</dd></div>
         </dl>
       </section>

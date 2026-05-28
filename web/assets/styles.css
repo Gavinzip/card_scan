@@ -262,6 +262,7 @@ button svg {
 }
 
 .settings-panel input[type="url"],
+.settings-panel input[type="text"],
 .settings-panel input[type="number"],
 .settings-panel select {
   width: 100%;
@@ -391,6 +392,131 @@ button svg {
   gap: 10px;
 }
 
+.candidate-selection {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid #d7bd79;
+  border-radius: 8px;
+  background: #fff8e5;
+}
+
+.candidate-selection-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.candidate-selection-header div {
+  display: grid;
+  gap: 3px;
+}
+
+.candidate-selection-header strong {
+  font-size: 1rem;
+}
+
+.candidate-selection-header span,
+.candidate-selection-header small {
+  color: #7a5a17;
+  line-height: 1.35;
+}
+
+.candidate-choice-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 10px;
+}
+
+.candidate-choice {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  gap: 10px;
+  min-height: 112px;
+  padding: 9px;
+  border: 1px solid #e1cf95;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.candidate-choice.is-recommended {
+  border-color: var(--green);
+}
+
+.candidate-choice.is-selected {
+  outline: 3px solid rgba(31, 122, 85, 0.2);
+}
+
+.candidate-image {
+  display: grid;
+  width: 76px;
+  height: 104px;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #edf2f0;
+  color: var(--muted);
+  font-size: 0.72rem;
+  text-align: center;
+}
+
+.candidate-image img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.candidate-body {
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: 5px;
+}
+
+.candidate-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.candidate-tags span {
+  min-height: 20px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  color: var(--blue);
+  background: #eef3fb;
+  font-size: 0.68rem;
+  font-weight: 800;
+}
+
+.candidate-body strong,
+.candidate-body p,
+.candidate-body small {
+  overflow-wrap: anywhere;
+}
+
+.candidate-body p {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.candidate-body small {
+  color: #7a5a17;
+}
+
+.candidate-body button {
+  justify-self: start;
+  min-height: 30px;
+  border: 1px solid var(--green);
+  border-radius: 8px;
+  padding: 0 10px;
+  color: var(--green-strong);
+  background: #eef8f2;
+  font-weight: 800;
+}
+
 .empty-state {
   display: grid;
   min-height: 150px;
@@ -472,12 +598,37 @@ button svg {
 
 .result-subtitle,
 .result-meta,
+.snkr-line,
 .price-line {
   margin-top: 6px;
   color: var(--muted);
   font-size: 0.9rem;
   line-height: 1.45;
   overflow-wrap: anywhere;
+}
+
+.snkr-line a {
+  color: var(--blue);
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.snkr-line a:hover {
+  text-decoration: underline;
+}
+
+.snkr-ok {
+  color: var(--green-strong);
+}
+
+.snkr-warning {
+  color: #9a5c00;
+  font-weight: 750;
+}
+
+.snkr-missing {
+  color: #8f3434;
+  font-weight: 750;
 }
 
 .price-line a {
