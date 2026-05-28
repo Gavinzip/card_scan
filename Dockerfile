@@ -39,6 +39,8 @@ RUN python -m pip install --upgrade pip && \
 
 COPY web ./web
 COPY scripts ./scripts
+RUN test -s ./scripts/server/assets/tcgp_yolo11n_obb/best.onnx && \
+    ls -lh ./scripts/server/assets/tcgp_yolo11n_obb/best.onnx
 COPY data/processed/image_index_base ./data/processed/image_index_base
 COPY data/processed/pokemon_ja_canonical_image_index_base ./data/processed/pokemon_ja_canonical_image_index_base
 COPY data/processed/onepiece_image_index_base ./data/processed/onepiece_image_index_base
@@ -47,8 +49,6 @@ COPY data/processed/pokemon_ja_canonical_summary.json ./data/processed/pokemon_j
 COPY data/processed/pokemon_ja_canonical_image_manifest.jsonl ./data/processed/pokemon_ja_canonical_image_manifest.jsonl
 COPY data/models/experiments/tcgp_yolo11n_obb/best.onnx ./data/models/experiments/tcgp_yolo11n_obb/best.onnx
 COPY data/models/experiments/tcgp_yolo11n_obb/metadata.yaml ./data/models/experiments/tcgp_yolo11n_obb/metadata.yaml
-RUN test -s ./data/models/experiments/tcgp_yolo11n_obb/best.onnx && \
-    ls -lh ./data/models/experiments/tcgp_yolo11n_obb/best.onnx
 
 EXPOSE 8080
 

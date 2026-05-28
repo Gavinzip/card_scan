@@ -65,7 +65,7 @@ CROP_MODEL_PATH = Path(os.environ.get("CARD_SCAN_CROP_MODEL_PATH", ROOT / "data/
 CROP_MODEL_REPO = os.environ.get("CARD_SCAN_CROP_MODEL_REPO", DEFAULT_REPO_ID)
 CROP_MODEL_FILE = os.environ.get("CARD_SCAN_CROP_MODEL_FILE", DEFAULT_MODEL_FILE)
 TCGP_OBB_MODEL_PATH = Path(
-    os.environ.get("CARD_SCAN_TCGP_OBB_MODEL_PATH", ROOT / "data/models/experiments/tcgp_yolo11n_obb/best.onnx")
+    os.environ.get("CARD_SCAN_TCGP_OBB_MODEL_PATH", ROOT / "scripts/server/assets/tcgp_yolo11n_obb/best.onnx")
 )
 TCGP_OBB_HUB_MODEL = os.environ.get(
     "CARD_SCAN_TCGP_OBB_HUB_MODEL",
