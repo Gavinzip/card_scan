@@ -4,6 +4,17 @@ const state = {
   scanning: false,
 };
 
+const TCGP_OBB_MODE = "tcgp_obb";
+const TCGP_OBB_MODEL_URL = "/assets/tcgp-obb-model/model.json";
+const TCGP_OBB_TFJS_URL = "https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js";
+const TCGP_OBB_INPUT_SIZE = 640;
+const TCGP_OBB_SCORE_THRESHOLD = 0.1;
+const TCGP_OBB_IOU_THRESHOLD = 0.1;
+
+let tfjsLoadPromise = null;
+let tcgpObbModelPromise = null;
+let tcgpObbModel = null;
+
 const els = {
   apiBaseInput: document.querySelector("#apiBaseInput"),
   cardCodeOcrToggle: document.querySelector("#cardCodeOcrToggle"),
@@ -42,6 +53,196 @@ function endpoint(path) {
 
 function seconds(value) {
   return typeof value === "number" ? `${value.toFixed(3)}s` : "-";
+}
+
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const existing = document.querySelector(`script[src="${src}"]`);
+    if (existing) {
+      existing.addEventListener("load", resolve, { once: true });
+      existing.addEventListener("error", reject, { once: true });
+      return;
+    }
+    const script = document.createElement("script");
+    script.src = src;
+    script.async = true;
+    script.onload = resolve;
+    script.onerror = () => reject(new Error(`Failed to load ${src}`));
+    document.head.appendChild(script);
+  });
+}
+
+async function loadTensorFlowJs() {
+  if (window.tf) return window.tf;
+  if (!tfjsLoadPromise) {
+    tfjsLoadPromise = loadScript(TCGP_OBB_TFJS_URL).then(() => {
+      if (!window.tf) throw new Error("TensorFlow.js did not initialize.");
+      return window.tf;
+    });
+  }
+  return tfjsLoadPromise;
+}
+
+async function loadTcgpObbModel() {
+  const tf = await loadTensorFlowJs();
+  if (tcgpObbModel) return tcgpObbModel;
+  if (!tcgpObbModelPromise) {
+    tcgpObbModelPromise = tf.loadGraphModel(TCGP_OBB_MODEL_URL).then((model) => {
+      tcgpObbModel = model;
+      return model;
+    });
+  }
+  return tcgpObbModelPromise;
+}
+
+function fileToImage(file) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    const url = URL.createObjectURL(file);
+    image.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve(image);
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("Could not read image for TCGP OBB crop."));
+    };
+    image.src = url;
+  });
+}
+
+function canvasToBlob(canvas, type = "image/jpeg", quality = 0.92) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) {
+        resolve(blob);
+      } else {
+        reject(new Error("Could not encode TCGP OBB crop."));
+      }
+    }, type, quality);
+  });
+}
+
+function tfDispose(tf, tensors) {
+  tensors.flat().forEach((tensor) => {
+    if (tensor && typeof tensor.dispose === "function") tensor.dispose();
+  });
+}
+
+async function detectTcgpObbBox(image) {
+  const tf = await loadTensorFlowJs();
+  const model = await loadTcgpObbModel();
+  const originalWidth = image.naturalWidth || image.width;
+  const originalHeight = image.naturalHeight || image.height;
+  const paddedSize = Math.max(originalWidth, originalHeight);
+  const paddedCanvas = document.createElement("canvas");
+  paddedCanvas.width = paddedSize;
+  paddedCanvas.height = paddedSize;
+  const paddedContext = paddedCanvas.getContext("2d");
+  paddedContext.fillStyle = "black";
+  paddedContext.fillRect(0, 0, paddedSize, paddedSize);
+  paddedContext.drawImage(image, 0, 0);
+
+  const input = tf.tidy(() => tf.image
+    .resizeBilinear(tf.browser.fromPixels(paddedCanvas), [TCGP_OBB_INPUT_SIZE, TCGP_OBB_INPUT_SIZE])
+    .div(255)
+    .expandDims(0));
+  const predictions = model.predict(input);
+  const output = Array.isArray(predictions) ? predictions[0] : predictions;
+  const [boxes, scores, classes, angles, boxesTransposed] = tf.tidy(() => {
+    const transposed = output.shape.length === 3 && output.shape[0] === 1
+      ? output.squeeze([0])
+      : output;
+    const rawBoxes = transposed.slice([0, 0], [4, -1]).transpose();
+    const x = rawBoxes.slice([0, 0], [-1, 1]);
+    const y = rawBoxes.slice([0, 1], [-1, 1]);
+    const width = rawBoxes.slice([0, 2], [-1, 1]);
+    const height = rawBoxes.slice([0, 3], [-1, 1]);
+    const x1 = tf.sub(x, tf.div(width, 2));
+    const y1 = tf.sub(y, tf.div(height, 2));
+    const x2 = tf.add(x1, width);
+    const y2 = tf.add(y1, height);
+    const nmsBoxes = tf.concat([y1, x1, y2, x2], 1);
+    const classScores = transposed.slice([4, 0], [1, -1]);
+    const maxScores = tf.max(classScores, 0);
+    const maxClasses = tf.argMax(classScores, 0);
+    const angleValues = transposed.shape[0] > 5
+      ? transposed.slice([5, 0], [1, -1]).squeeze()
+      : tf.zerosLike(maxScores);
+    return [nmsBoxes, maxScores, maxClasses, angleValues, rawBoxes];
+  });
+
+  try {
+    const selectedIndexes = await tf.image.nonMaxSuppressionAsync(
+      boxes,
+      scores,
+      20,
+      TCGP_OBB_IOU_THRESHOLD,
+      TCGP_OBB_SCORE_THRESHOLD,
+    );
+    const detections = tf.tidy(() => tf.concat([
+      boxesTransposed.gather(selectedIndexes, 0),
+      scores.gather(selectedIndexes, 0).expandDims(1),
+      classes.gather(selectedIndexes, 0).expandDims(1),
+      angles.gather(selectedIndexes, 0).expandDims(1),
+    ], 1));
+    const values = await detections.data();
+    const count = detections.shape[0];
+    const candidates = [];
+    for (let index = 0; index < count; index += 1) {
+      const offset = index * 7;
+      const centerX = (values[offset] * paddedSize) / TCGP_OBB_INPUT_SIZE;
+      const centerY = (values[offset + 1] * paddedSize) / TCGP_OBB_INPUT_SIZE;
+      let width = (values[offset + 2] * paddedSize) / TCGP_OBB_INPUT_SIZE;
+      let height = (values[offset + 3] * paddedSize) / TCGP_OBB_INPUT_SIZE;
+      const confidence = values[offset + 4];
+      let angle = values[offset + 6] || 0;
+      if (centerX < 0 || centerX > originalWidth || centerY < 0 || centerY > originalHeight) continue;
+      if (width < 10 || height < 10) continue;
+      if (width > height) {
+        [width, height] = [height, width];
+        angle += Math.PI / 2;
+      }
+      candidates.push({ centerX, centerY, width, height, confidence, angle });
+    }
+    tfDispose(tf, [selectedIndexes, detections]);
+    candidates.sort((a, b) => b.confidence - a.confidence);
+    return candidates[0] || null;
+  } finally {
+    tfDispose(tf, [input, predictions, boxes, scores, classes, angles, boxesTransposed]);
+  }
+}
+
+async function cropWithTcgpObb(file) {
+  const started = performance.now();
+  const image = await fileToImage(file);
+  const box = await detectTcgpObbBox(image);
+  if (!box) throw new Error("TCGP OBB did not detect a card.");
+
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(box.width));
+  canvas.height = Math.max(1, Math.round(box.height));
+  const context = canvas.getContext("2d");
+  context.save();
+  context.translate(canvas.width / 2, canvas.height / 2);
+  context.rotate(-box.angle);
+  context.drawImage(image, -box.centerX, -box.centerY);
+  context.restore();
+
+  const blob = await canvasToBlob(canvas);
+  const secondsElapsed = (performance.now() - started) / 1000;
+  const croppedFile = new File([blob], file.name.replace(/\.[^.]+$/, "") + "-tcgp-obb.jpg", {
+    type: "image/jpeg",
+  });
+  const dataUrl = canvas.toDataURL("image/jpeg", 0.88);
+  return {
+    file: croppedFile,
+    dataUrl,
+    seconds: secondsElapsed,
+    status: "tcgp_obb_browser",
+    confidence: box.confidence,
+    box,
+  };
 }
 
 function escapeHtml(value) {
@@ -107,6 +308,12 @@ function renderCrop(payload) {
     return;
   }
   els.cropPreview.innerHTML = `<span>${escapeHtml(status)}</span>`;
+}
+
+function renderClientCrop(payload) {
+  const confidence = typeof payload.confidence === "number" ? ` · ${(payload.confidence * 100).toFixed(1)}%` : "";
+  els.cropStatus.textContent = `${payload.status}${confidence}`;
+  els.cropPreview.innerHTML = `<img alt="TCGP OBB browser crop" src="${payload.dataUrl}">`;
 }
 
 function resultTitle(result) {
@@ -310,9 +517,32 @@ async function recognize() {
   els.cropStatus.textContent = "Scanning";
   els.cropPreview.innerHTML = "<span>Processing...</span>";
 
+  let requestFile = state.file;
+  let clientCrop = null;
+  const selectedCropMode = els.cropModeInput.value;
+  const useTcgpObbCrop = els.cropToggle.checked && selectedCropMode === TCGP_OBB_MODE;
+
+  try {
+    if (useTcgpObbCrop) {
+      setStatus("Running TCGP OBB crop in browser...");
+      els.cropStatus.textContent = "Loading TCGP OBB";
+      clientCrop = await cropWithTcgpObb(state.file);
+      requestFile = clientCrop.file;
+      renderClientCrop(clientCrop);
+      setStatus("Searching with TCGP OBB crop...");
+    }
+  } catch (error) {
+    setStatus(`TCGP OBB crop failed: ${error.message}`);
+    els.cropStatus.textContent = "Error";
+    els.cropPreview.innerHTML = "<span>沒有裁切結果</span>";
+    state.scanning = false;
+    updateButtonState();
+    return;
+  }
+
   const params = new URLSearchParams({
-    crop: String(els.cropToggle.checked && els.cropModeInput.value !== "none"),
-    crop_mode: els.cropModeInput.value,
+    crop: String(els.cropToggle.checked && selectedCropMode !== "none" && !useTcgpObbCrop),
+    crop_mode: useTcgpObbCrop ? "none" : selectedCropMode,
     fallback_to_original: String(els.fallbackToggle.checked),
     top_k: String(Number(els.topKInput.value || 5)),
     per_index_top_k: String(Math.max(Number(els.topKInput.value || 5), 5)),
@@ -334,7 +564,7 @@ async function recognize() {
     include_debug_crop_base64: "true",
   });
   const body = new FormData();
-  body.append("file", state.file);
+  body.append("file", requestFile);
 
   try {
     const response = await fetch(`${endpoint("/recognize")}?${params.toString()}`, {
@@ -343,8 +573,17 @@ async function recognize() {
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
-    setTimings(data.timings);
-    renderCrop(data.crop);
+    const timings = { ...(data.timings || {}) };
+    if (clientCrop) {
+      timings.crop_seconds = clientCrop.seconds;
+      timings.total_seconds = (timings.total_seconds || 0) + clientCrop.seconds;
+    }
+    setTimings(timings);
+    if (clientCrop) {
+      renderClientCrop(clientCrop);
+    } else {
+      renderCrop(data.crop);
+    }
     renderResults(data.results, data.candidate_selection);
     const parsed = data.card_code_ocr?.best?.parsed;
     const hintParsed = data.hint_card_code?.best?.parsed;
@@ -352,7 +591,8 @@ async function recognize() {
     const hintStatus = hintParsed ? ` Hint ${hintParsed.set_id}-${hintParsed.card_number}` : "";
     const languageStatus = language ? ` Lang ${language}` : "";
     const ocrStatus = parsed ? ` OCR ${parsed.set_id}-${parsed.card_number}` : "";
-    setStatus(data.status === "ok" ? `Scan complete.${hintStatus}${languageStatus}${ocrStatus}` : data.status);
+    const cropStatus = clientCrop ? " TCGP OBB" : "";
+    setStatus(data.status === "ok" ? `Scan complete.${cropStatus}${hintStatus}${languageStatus}${ocrStatus}` : data.status);
   } catch (error) {
     setStatus(`Scan failed: ${error.message}`);
     els.cropStatus.textContent = "Error";
