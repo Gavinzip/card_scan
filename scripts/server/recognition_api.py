@@ -3666,6 +3666,8 @@ def health() -> dict[str, Any]:
         "default_card_detector": DEFAULT_CARD_DETECTOR,
         "tcgp_obb_model_path": str(TCGP_OBB_MODEL_PATH),
         "tcgp_obb_model_exists": TCGP_OBB_MODEL_PATH.exists(),
+        "tcgp_obb_model_size_bytes": TCGP_OBB_MODEL_PATH.stat().st_size if TCGP_OBB_MODEL_PATH.exists() else 0,
+        "tcgp_obb_model_source": "local" if TCGP_OBB_MODEL_PATH.exists() else "hub_fallback",
         "embedding_model_loaded": service.embedding_model is not None,
         "siglip_model_loaded": service.siglip_model is not None,
         "siglip_model": DEFAULT_SIGLIP_MODEL,
