@@ -1,19 +1,24 @@
 const state = {
   file: null,
   previewUrl: null,
+  clientCropPreviewUrl: null,
   scanning: false,
 };
 
 const TCGP_OBB_MODE = "tcgp_obb";
 const TCGP_OBB_MODEL_URL = "/assets/tcgp-obb-model/model.json";
 const TCGP_OBB_TFJS_URL = "https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js";
+const TCGP_OBB_TFJS_WASM_URL = "https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-wasm@4.22.0/dist/tf-backend-wasm.min.js";
+const TCGP_OBB_TFJS_WASM_PATH = "https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-wasm@4.22.0/dist/";
 const TCGP_OBB_INPUT_SIZE = 640;
 const TCGP_OBB_SCORE_THRESHOLD = 0.1;
 const TCGP_OBB_IOU_THRESHOLD = 0.1;
 
 let tfjsLoadPromise = null;
+let tfjsBackendPromise = null;
 let tcgpObbModelPromise = null;
 let tcgpObbModel = null;
+let tcgpObbWarmupPromise = null;
 
 const els = {
   apiBaseInput: document.querySelector("#apiBaseInput"),
@@ -73,14 +78,43 @@ function loadScript(src) {
 }
 
 async function loadTensorFlowJs() {
-  if (window.tf) return window.tf;
+  if (window.tf) return configureTensorFlowBackend(window.tf);
   if (!tfjsLoadPromise) {
     tfjsLoadPromise = loadScript(TCGP_OBB_TFJS_URL).then(() => {
       if (!window.tf) throw new Error("TensorFlow.js did not initialize.");
       return window.tf;
     });
   }
-  return tfjsLoadPromise;
+  return configureTensorFlowBackend(await tfjsLoadPromise);
+}
+
+async function configureTensorFlowBackend(tf) {
+  if (!tfjsBackendPromise) {
+    tfjsBackendPromise = (async () => {
+      let usingWebgl = false;
+      try {
+        if (tf.getBackend?.() !== "webgl") await tf.setBackend("webgl");
+        await tf.ready();
+        usingWebgl = tf.getBackend?.() === "webgl";
+      } catch (error) {
+        console.warn("TCGP OBB WebGL backend unavailable, using TensorFlow.js fallback.", error);
+      }
+      if (!usingWebgl) {
+        try {
+          await loadScript(TCGP_OBB_TFJS_WASM_URL);
+          if (typeof tf.setWasmPaths === "function") tf.setWasmPaths(TCGP_OBB_TFJS_WASM_PATH);
+          if (typeof tf.wasm?.setWasmPaths === "function") tf.wasm.setWasmPaths(TCGP_OBB_TFJS_WASM_PATH);
+          await tf.setBackend("wasm");
+          await tf.ready();
+        } catch (error) {
+          console.warn("TCGP OBB WASM backend unavailable, using TensorFlow.js CPU fallback.", error);
+        }
+      }
+      await tf.ready();
+      return tf;
+    })();
+  }
+  return tfjsBackendPromise;
 }
 
 async function loadTcgpObbModel() {
@@ -95,7 +129,56 @@ async function loadTcgpObbModel() {
   return tcgpObbModelPromise;
 }
 
+async function warmupTcgpObbModel() {
+  if (!tcgpObbWarmupPromise) {
+    tcgpObbWarmupPromise = (async () => {
+      const tf = await loadTensorFlowJs();
+      const model = await loadTcgpObbModel();
+      const input = tf.zeros([1, TCGP_OBB_INPUT_SIZE, TCGP_OBB_INPUT_SIZE, 3]);
+      const predictions = model.predict(input);
+      const outputs = Array.isArray(predictions) ? predictions : [predictions];
+      try {
+        await Promise.all(outputs.map((tensor) => tensor.data()));
+      } finally {
+        tfDispose(tf, [input, outputs]);
+      }
+      return { backend: tf.getBackend?.() || "unknown" };
+    })().catch((error) => {
+      tcgpObbWarmupPromise = null;
+      throw error;
+    });
+  }
+  return tcgpObbWarmupPromise;
+}
+
+function maybePreloadTcgpObb() {
+  if (els.cropModeInput.value !== TCGP_OBB_MODE) return;
+  const originalStatus = els.statusText.textContent;
+  if (!state.scanning) setStatus("Preparing TCGP OBB crop...");
+  warmupTcgpObbModel()
+    .then((info) => {
+      if (!state.scanning && els.cropModeInput.value === TCGP_OBB_MODE) {
+        setStatus(`TCGP OBB crop ready (${info.backend}).`);
+      }
+    })
+    .catch((error) => {
+      if (!state.scanning && els.cropModeInput.value === TCGP_OBB_MODE) {
+        setStatus(`TCGP OBB preload failed: ${error.message}`);
+      } else if (!state.scanning) {
+        setStatus(originalStatus);
+      }
+    });
+}
+
 function fileToImage(file) {
+  if (window.createImageBitmap) {
+    return createImageBitmap(file, { imageOrientation: "from-image" })
+      .catch(() => fileToHtmlImage(file));
+  }
+  return fileToHtmlImage(file);
+}
+
+function fileToHtmlImage(file) {
   return new Promise((resolve, reject) => {
     const image = new Image();
     const url = URL.createObjectURL(file);
@@ -135,16 +218,23 @@ async function detectTcgpObbBox(image) {
   const originalWidth = image.naturalWidth || image.width;
   const originalHeight = image.naturalHeight || image.height;
   const paddedSize = Math.max(originalWidth, originalHeight);
-  const paddedCanvas = document.createElement("canvas");
-  paddedCanvas.width = paddedSize;
-  paddedCanvas.height = paddedSize;
-  const paddedContext = paddedCanvas.getContext("2d");
-  paddedContext.fillStyle = "black";
-  paddedContext.fillRect(0, 0, paddedSize, paddedSize);
-  paddedContext.drawImage(image, 0, 0);
+  const scale = TCGP_OBB_INPUT_SIZE / paddedSize;
+  const inputCanvas = document.createElement("canvas");
+  inputCanvas.width = TCGP_OBB_INPUT_SIZE;
+  inputCanvas.height = TCGP_OBB_INPUT_SIZE;
+  const inputContext = inputCanvas.getContext("2d");
+  inputContext.fillStyle = "black";
+  inputContext.fillRect(0, 0, TCGP_OBB_INPUT_SIZE, TCGP_OBB_INPUT_SIZE);
+  inputContext.drawImage(
+    image,
+    0,
+    0,
+    Math.max(1, Math.round(originalWidth * scale)),
+    Math.max(1, Math.round(originalHeight * scale)),
+  );
 
-  const input = tf.tidy(() => tf.image
-    .resizeBilinear(tf.browser.fromPixels(paddedCanvas), [TCGP_OBB_INPUT_SIZE, TCGP_OBB_INPUT_SIZE])
+  const input = tf.tidy(() => tf.browser
+    .fromPixels(inputCanvas)
     .div(255)
     .expandDims(0));
   const predictions = model.predict(input);
@@ -230,14 +320,14 @@ async function cropWithTcgpObb(file) {
   context.restore();
 
   const blob = await canvasToBlob(canvas);
+  if (typeof image.close === "function") image.close();
   const secondsElapsed = (performance.now() - started) / 1000;
   const croppedFile = new File([blob], file.name.replace(/\.[^.]+$/, "") + "-tcgp-obb.jpg", {
     type: "image/jpeg",
   });
-  const dataUrl = canvas.toDataURL("image/jpeg", 0.88);
   return {
     file: croppedFile,
-    dataUrl,
+    previewUrl: URL.createObjectURL(blob),
     seconds: secondsElapsed,
     status: "tcgp_obb_browser",
     confidence: box.confidence,
@@ -291,12 +381,17 @@ function useFile(file) {
   }
   state.file = file;
   if (state.previewUrl) URL.revokeObjectURL(state.previewUrl);
+  if (state.clientCropPreviewUrl) {
+    URL.revokeObjectURL(state.clientCropPreviewUrl);
+    state.clientCropPreviewUrl = null;
+  }
   state.previewUrl = URL.createObjectURL(file);
   els.previewImage.src = state.previewUrl;
   els.previewFrame.hidden = false;
   els.fileMeta.textContent = `${file.name} · ${(file.size / 1024 / 1024).toFixed(2)} MB`;
   setStatus("Image ready.");
   updateButtonState();
+  maybePreloadTcgpObb();
 }
 
 function renderCrop(payload) {
@@ -312,8 +407,12 @@ function renderCrop(payload) {
 
 function renderClientCrop(payload) {
   const confidence = typeof payload.confidence === "number" ? ` · ${(payload.confidence * 100).toFixed(1)}%` : "";
+  if (state.clientCropPreviewUrl && state.clientCropPreviewUrl !== payload.previewUrl) {
+    URL.revokeObjectURL(state.clientCropPreviewUrl);
+  }
+  state.clientCropPreviewUrl = payload.previewUrl || null;
   els.cropStatus.textContent = `${payload.status}${confidence}`;
-  els.cropPreview.innerHTML = `<img alt="TCGP OBB browser crop" src="${payload.dataUrl}">`;
+  els.cropPreview.innerHTML = `<img alt="TCGP OBB browser crop" src="${payload.previewUrl || payload.dataUrl}">`;
 }
 
 function resultTitle(result) {
@@ -495,10 +594,13 @@ async function warmup() {
   setStatus("Warming up models and indexes...");
   els.warmupButton.disabled = true;
   try {
-    const response = await fetch(endpoint("/warmup"), { method: "POST" });
+    const warmups = [fetch(endpoint("/warmup"), { method: "POST" })];
+    if (els.cropModeInput.value === TCGP_OBB_MODE) warmups.push(warmupTcgpObbModel());
+    const [response, tcgpInfo] = await Promise.all(warmups);
     const data = await response.json();
     if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
-    setStatus(`Warmup finished in ${seconds(data.seconds)}.`);
+    const tcgpText = tcgpInfo ? ` TCGP OBB ready (${tcgpInfo.backend}).` : "";
+    setStatus(`Warmup finished in ${seconds(data.seconds)}.${tcgpText}`);
     await checkHealth();
   } catch (error) {
     setStatus(`Warmup failed: ${error.message}`);
@@ -610,6 +712,8 @@ els.confidenceInput.addEventListener("input", () => {
 els.fileInput.addEventListener("change", (event) => {
   useFile(event.target.files?.[0]);
 });
+
+els.cropModeInput.addEventListener("change", maybePreloadTcgpObb);
 
 for (const eventName of ["dragenter", "dragover"]) {
   els.dropZone.addEventListener(eventName, (event) => {
