@@ -60,6 +60,19 @@ curl -F "file=@/path/to/photo.jpg" \
   "$APP_URL/recognize?top_k=5&per_index_top_k=5"
 ```
 
+Generate recognition, Raw/A and PSA 10 prices, the text report, and TCGPro
+poster PNGs in one request:
+
+```bash
+curl -F "file=@/path/to/photo.jpg" \
+  "$APP_URL/market-report?crop=true&crop_mode=tcgp_obb&top_k=5&include_posters=true"
+```
+
+The endpoint writes generated files below `CARD_SCAN_REPORT_OUTPUT_DIR` and
+serves them from `/reports/{report_id}/{filename}`. It uses SNKRDUNK trading
+histories, applies a per-bucket IQR outlier filter, and returns the filtered
+Raw/A and PSA 10 summaries in JSON.
+
 No silent crop fallback is used by default. If the card detector does not find a card, the API returns `status=no_detection`. To explicitly search the original image anyway:
 
 ```bash
@@ -82,6 +95,9 @@ curl -F "file=@/path/to/photo.jpg" \
 | `CARD_SCAN_CORS_ORIGINS` | empty | Optional comma-separated origins if a separate frontend calls this API. Leave empty for same-origin Zeabur deployment. |
 | `CARD_SCAN_CROP_CONFIDENCE` | `0.25` | YOLO detection confidence threshold. |
 | `CARD_SCAN_CROP_IMGSZ` | `1024` | YOLO inference image size. |
+| `CARD_SCAN_REPORT_OUTPUT_DIR` | `/tmp/card_scan_reports` | Directory for `/market-report` markdown and poster files served under `/reports`. |
+| `CARD_SCAN_SNKR_HISTORY_TIMEOUT` | `12` | Timeout in seconds for SNKRDUNK trading-history requests. |
+| `CARD_SCAN_MARKET_JPY_RATE` | `150` | JPY/USD conversion rate used for poster labels when SNKRDUNK records are rendered as JPY with USD hints. |
 
 ## Expected Performance
 

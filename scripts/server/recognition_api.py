@@ -28,7 +28,7 @@ os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 
 ROOT = Path(__file__).resolve().parents[2]
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -47,6 +47,7 @@ from scripts.cropping.auto_crop_cards import (
 from scripts.indexing.query_image_index import load_model
 from scripts.lib.io_utils import iter_jsonl, read_json
 from scripts.lib.schema import utc_now_iso
+from scripts.server.market_report import DEFAULT_JPY_RATE, REPORT_OUTPUT_DIR, build_market_report
 
 APP_VERSION = "0.1.0"
 FRONTEND_DIR = ROOT / "web"
@@ -3618,8 +3619,23 @@ def api_info() -> dict[str, Any]:
         "name": "TCG Card Recognition API",
         "version": APP_VERSION,
         "frontend": "/",
-        "endpoints": ["/api", "/health", "/warmup", "/recognize", "/detect-cards", "/recognize-cards"],
+        "endpoints": [
+            "/api",
+            "/health",
+            "/warmup",
+            "/recognize",
+            "/detect-cards",
+            "/recognize-cards",
+            "/market-report",
+            "/reports/{report_id}/{filename}",
+        ],
         "reference_image_route": REFERENCE_IMAGE_ROUTE,
+        "features": {
+            "market_report": {
+                "endpoint": "/market-report",
+                "outputs": ["recognition", "prices", "markdown", "poster URLs"],
+            }
+        },
     }
 
 
@@ -3717,6 +3733,10 @@ def health() -> dict[str, Any]:
             "exists": SNKR_MAPPING_FLAGS_PATH.exists(),
             "records": len(SNKR_MAPPING_FLAGS),
             "suppress_flagged_mappings": SUPPRESS_FLAGGED_SNKR_MAPPINGS,
+        },
+        "market_report": {
+            "output_dir": str(REPORT_OUTPUT_DIR),
+            "poster_template": "TCGPro v3",
         },
         "device": service.device or DEFAULT_DEVICE or "auto",
         "siglip_device": service.siglip_device or DEFAULT_DEVICE or "auto",
@@ -4428,3 +4448,92 @@ async def recognize(
         "card_code_ocr": ocr_payload,
         "timings": timings,
     }
+
+
+@app.get("/reports/{report_id}/{filename}")
+def report_file(report_id: str, filename: str) -> Any:
+    safe_report_id = safe_url_part(report_id)
+    safe_filename = Path(filename).name
+    root = REPORT_OUTPUT_DIR.resolve()
+    path = (root / safe_report_id / safe_filename).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Report file not found.") from exc
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="Report file not found.")
+    return FileResponse(path)
+
+
+@app.post("/market-report")
+async def market_report(
+    request: Request,
+    file: UploadFile = File(...),
+    crop: bool = True,
+    crop_mode: str = DEFAULT_CROP_MODE,
+    fallback_to_original: bool = True,
+    top_k: int = 5,
+    per_index_top_k: int = 5,
+    visual_rerank: bool = False,
+    visual_rerank_candidates: int = DEFAULT_VISUAL_RERANK_CANDIDATES,
+    visual_rerank_weight: float = DEFAULT_VISUAL_RERANK_WEIGHT,
+    rerank_model: str = DEFAULT_RERANK_MODEL,
+    card_code_ocr: bool = DEFAULT_CARD_CODE_OCR,
+    card_code_ocr_boost: float = DEFAULT_CARD_CODE_OCR_EXACT_BOOST,
+    language_rerank: bool = DEFAULT_LANGUAGE_RERANK,
+    language_rerank_boost: float = DEFAULT_LANGUAGE_RERANK_BOOST,
+    language_rerank_candidates: int = DEFAULT_LANGUAGE_RERANK_CANDIDATES,
+    language_hint: str = "",
+    language_hint_text: str = "",
+    language_ocr: bool = DEFAULT_LANGUAGE_OCR,
+    language_ocr_engine: str = DEFAULT_LANGUAGE_OCR_ENGINE,
+    slab_barcode_lookup: bool = DEFAULT_SLAB_BARCODE_LOOKUP,
+    hint_card_code: bool = True,
+    hint_card_code_boost: float = DEFAULT_HINT_CARD_CODE_BOOST,
+    confidence: float = DEFAULT_CONFIDENCE,
+    imgsz: int = DEFAULT_IMGSZ,
+    padding: float = DEFAULT_PADDING,
+    target_aspect: float = DEFAULT_TARGET_ASPECT,
+    aspect_tolerance: float = DEFAULT_ASPECT_TOLERANCE,
+    include_posters: bool = True,
+    include_poster_base64: bool = False,
+    jpy_rate: float = DEFAULT_JPY_RATE,
+) -> dict[str, Any]:
+    recognition_payload = await recognize(
+        file=file,
+        crop=crop,
+        crop_mode=crop_mode,
+        fallback_to_original=fallback_to_original,
+        top_k=top_k,
+        per_index_top_k=per_index_top_k,
+        visual_rerank=visual_rerank,
+        visual_rerank_candidates=visual_rerank_candidates,
+        visual_rerank_weight=visual_rerank_weight,
+        rerank_model=rerank_model,
+        card_code_ocr=card_code_ocr,
+        card_code_ocr_boost=card_code_ocr_boost,
+        language_rerank=language_rerank,
+        language_rerank_boost=language_rerank_boost,
+        language_rerank_candidates=language_rerank_candidates,
+        language_hint=language_hint,
+        language_hint_text=language_hint_text,
+        language_ocr=language_ocr,
+        language_ocr_engine=language_ocr_engine,
+        slab_barcode_lookup=slab_barcode_lookup,
+        hint_card_code=hint_card_code,
+        hint_card_code_boost=hint_card_code_boost,
+        confidence=confidence,
+        imgsz=imgsz,
+        padding=padding,
+        target_aspect=target_aspect,
+        aspect_tolerance=aspect_tolerance,
+        include_debug_crop_base64=False,
+    )
+    base_url = str(request.base_url).rstrip("/")
+    return await build_market_report(
+        recognition_payload,
+        base_url=base_url,
+        include_posters=include_posters,
+        include_poster_base64=include_poster_base64,
+        jpy_rate=jpy_rate,
+    )

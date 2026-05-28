@@ -265,6 +265,23 @@ curl -F "file=@/path/to/photo.jpg" \
   "http://127.0.0.1:8080/recognize?top_k=5&per_index_top_k=5"
 ```
 
+Generate the full card market report from the same API server:
+
+```bash
+curl -F "file=@/path/to/photo.jpg" \
+  "http://127.0.0.1:8080/market-report?crop=true&crop_mode=tcgp_obb&top_k=5&include_posters=true"
+```
+
+`/market-report` runs recognition first, reads the top candidate's SNKRDUNK
+`product_id`, fetches SNKRDUNK trading histories, applies a per-bucket IQR
+outlier filter, and returns Raw/A plus PSA 10 prices. The response includes
+`recognition`, `snkr`, `prices.raw_A`, `prices.psa_10`, `markdown`, and
+downloadable files under `/reports/{report_id}/...`, including the text report
+and TCGPro poster PNGs when `include_posters=true`. Set
+`include_poster_base64=true` when a client needs inline PNG payloads instead of
+URLs. Generated files are written to `CARD_SCAN_REPORT_OUTPUT_DIR`, defaulting
+to `/tmp/card_scan_reports`.
+
 Open the built-in frontend:
 
 ```text
