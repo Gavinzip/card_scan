@@ -1,16 +1,16 @@
 {
-  "allow_sample": true,
-  "allow_watermarked": true,
+  "allow_sample": false,
+  "allow_watermarked": false,
   "backend": "timm",
-  "completed_at": "2026-05-27T15:46:49+00:00",
-  "device": "cuda",
+  "completed_at": "2026-05-31T13:35:39+00:00",
+  "device": "mps",
   "embedding_dim": 768,
   "excluded_before_limit": {
     "missing_local_image_path": 0,
     "sample": 0,
     "watermarked": 0
   },
-  "image_manifest": "/content/card_scan_onepiece_base/onepiece_base/onepiece_base_image_manifest_colab.jsonl",
+  "image_manifest": "data/processed/onepiece_base_image_manifest_index_update.jsonl",
   "model": "vit_base_patch14_dinov2",
   "outputs": {
     "embeddings": "data/processed/onepiece_image_index_base/image_embeddings.npy",
@@ -18,6 +18,14 @@
     "manifest": "data/processed/onepiece_image_index_base/image_embedding_manifest.jsonl"
   },
   "pretrained": "laion2b_s34b_b79k",
-  "records_indexed": 6060,
+  "records_indexed": 6206,
+  "reuse_by_key_update": {
+    "added_records": 146,
+    "backup_dir": "data/processed/onepiece_image_index_base/backup_before_reuse_by_key_update_20260531T133440+0000",
+    "changed_or_added_records": 146,
+    "removed_records": 0,
+    "reused_records": 6060,
+    "updated_at": "2026-05-31T13:35:39+00:00"
+  },
   "started_at": "2026-05-27T15:28:02+00:00"
 }
